@@ -1,0 +1,75 @@
+import { Difficulty, PowerUpType } from './types';
+
+export const CANVAS_WIDTH = 800;
+export const CANVAS_HEIGHT = 600; // Increased to better fill screen
+
+export const PADDLE_WIDTH = 100;
+export const PADDLE_WIDTH_ENLARGED = 160;
+export const PADDLE_HEIGHT = 20;
+export const PADDLE_SPEED = 8;
+export const PADDLE_OFFSET_BOTTOM = 40;
+
+export const BALL_RADIUS = 8;
+
+export const BRICK_ROW_COUNT = 6;
+export const BRICK_COLUMN_COUNT = 9;
+export const BRICK_PADDING = 4;
+export const BRICK_OFFSET_TOP = 60;
+export const BRICK_OFFSET_LEFT = 35;
+export const BRICK_HEIGHT = 25;
+
+export const BRICK_WIDTH = (CANVAS_WIDTH - (BRICK_OFFSET_LEFT * 2) - (BRICK_PADDING * (BRICK_COLUMN_COUNT - 1))) / BRICK_COLUMN_COUNT;
+
+export const COLORS = {
+  paddle: '#38bdf8', // Sky 400
+  paddleFlash: '#ffffff',
+  ball: '#ffffff',
+  background: '#0f172a', // Slate 900
+  text: '#ffffff',
+  particles: ['#f472b6', '#22d3ee', '#fbbf24', '#a78bfa'],
+  shield: '#22d3ee', // Cyan
+  laserBeam: '#ef4444', // Red
+  bricks: [
+    '#ef4444', // Red 500
+    '#f97316', // Orange 500
+    '#eab308', // Yellow 500
+    '#22c55e', // Green 500
+    '#3b82f6', // Blue 500
+    '#a855f7', // Purple 500
+  ]
+};
+
+export const POWERUP_COLORS = {
+  [PowerUpType.ENLARGE]: '#22c55e', // Green
+  [PowerUpType.MULTIBALL]: '#fbbf24', // Amber
+  [PowerUpType.SHIELD]: '#38bdf8', // Sky
+  [PowerUpType.LASER]: '#ef4444', // Red
+  [PowerUpType.STICKY]: '#4ade80', // Green 400
+  [PowerUpType.HEART]: '#ec4899' // Pink 500
+};
+
+export const DIFFICULTY_SETTINGS = {
+  [Difficulty.EASY]: {
+    ballSpeed: 4,
+    lives: 4,
+    paddleWidthFactor: 1.2
+  },
+  [Difficulty.MEDIUM]: {
+    ballSpeed: 6,
+    lives: 3,
+    paddleWidthFactor: 1.0
+  },
+  [Difficulty.HARD]: {
+    ballSpeed: 8,
+    lives: 2,
+    paddleWidthFactor: 0.8
+  }
+};
+
+export const POWERUP_CHANCE = 0.15; // 15% chance
+export const POWERUP_SPEED = 3;
+export const SHIELD_DURATION = 10000; // 10s
+export const ENLARGE_DURATION = 10000; // 10s
+export const STICKY_DURATION = 10000; // 10s
+export const LASER_DELAY = 2000; // 2.0s
+export const POWERUP_WARNING_MS = 3000; // Warning starts 3 seconds before expiry

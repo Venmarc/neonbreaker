@@ -1,0 +1,42 @@
+/* Reset body margin to ensure full screen coverage */
+body {
+  margin: 0;
+  padding: 0;
+  background-color: #020617; /* Slate 950 matches Tailwind */
+  overflow: hidden; /* Prevent scrollbars */
+}
+
+.app-container {
+  width: 100vw;
+  height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background-color: #020617;
+}
+
+.game-stage {
+  /* Fixed logical size */
+  width: 800px;
+  height: 800px;
+  
+  /* Flex layout for internal components */
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: space-between;
+  
+  /* Centering transform */
+  transform-origin: center center;
+  
+  /* Visuals */
+  background-color: #0f172a; /* Slate 900 */
+  box-shadow: 0 0 100px rgba(0, 0, 0, 0.8);
+  padding: 20px;
+  box-sizing: border-box;
+  
+  /* Ensure it clips correctly if needed, though visible overflow might be desired for effects */
+  overflow: visible; 
+  border-radius: 12px;
+}

@@ -14,8 +14,6 @@ export const detectCircleRectCollision = (circle: Ball, rect: { x: number, y: nu
   
   if (distanceSquared < (circle.radius * circle.radius)) {
     // Determine the axis of collision based on the overlap
-    // If the distance in X is greater than Y (normalized by dimensions), it's likely a side hit
-    // A simplified robust approach:
     // If the ball center is horizontally within the rect's width range, it's a vertical hit.
     // Otherwise if it's vertically within the rect's height range, it's a horizontal hit.
     // If it's a corner, check which overlap is smaller.
@@ -24,9 +22,9 @@ export const detectCircleRectCollision = (circle: Ball, rect: { x: number, y: nu
     const overlapY = (circle.radius + rect.height / 2) - Math.abs(circle.y - (rect.y + rect.height / 2));
 
     if (overlapX < overlapY) {
-      return { hit: true, axis: 'x' };
+      return { hit: true, axis: 'x', overlap: overlapX };
     } else {
-      return { hit: true, axis: 'y' };
+      return { hit: true, axis: 'y', overlap: overlapY };
     }
   }
 

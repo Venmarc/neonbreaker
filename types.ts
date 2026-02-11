@@ -89,4 +89,5 @@ export interface PowerUp {
 export interface Collision {
   hit: boolean;
   axis?: 'x' | 'y';
+  overlap?: number;
 }

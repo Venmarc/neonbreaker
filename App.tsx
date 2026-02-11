@@ -4,6 +4,12 @@ import { GameState, Difficulty } from './types';
 import { Play, RotateCcw, Trophy, Settings, Home, Volume2, VolumeX, ArrowLeft, Heart } from 'lucide-react';
 import { playSound, startMusic, stopMusic, setMusicVolume, setSfxVolume, getMusicVolume, getSfxVolume } from './utils/audio';
 import { DIFFICULTY_SETTINGS } from './constants';
+import { useGameScale } from './hooks/useGameScale';
+import './App.css';
+
+// Logical Resolution
+const BASE_WIDTH = 800;
+const BASE_HEIGHT = 800;
 
 const App: React.FC = () => {
   const [gameState, setGameState] = useState<GameState>(GameState.MENU);
@@ -13,6 +19,9 @@ const App: React.FC = () => {
   const [difficulty, setDifficulty] = useState<Difficulty>(Difficulty.MEDIUM);
   const [gameKey, setGameKey] = useState(0); // Used to force remount for restart
   
+  // Responsive Scale
+  const scale = useGameScale(BASE_WIDTH, BASE_HEIGHT);
+
   // Audio State
   const [musicVol, setMusicVolState] = useState(0.3);
   const [sfxVol, setSfxVolState] = useState(0.5);
@@ -106,64 +115,71 @@ const App: React.FC = () => {
   const showHud = gameState === GameState.PLAYING || gameState === GameState.PAUSED;
 
   return (
-    <div className="h-screen w-screen flex flex-col items-center justify-between p-4 bg-slate-950 text-white selection:bg-pink-500 selection:text-white overflow-hidden font-sans">
+    <div className="app-container">
+      {/* 
+        The game-stage is a fixed-size container that gets scaled up/down 
+        via CSS transform to fit the window.
+      */}
+      <div 
+        className="game-stage font-sans text-white selection:bg-pink-500 selection:text-white"
+        style={{ transform: `scale(${scale})` }}
+      >
       
-      {/* Header Area */}
-      <div className="flex-none flex flex-col items-center w-full max-w-[800px] z-10 relative">
-        
-        {/* Settings Button */}
-        <button 
-            onClick={togglePause}
-            className="absolute left-0 top-2 p-2 text-slate-400 hover:text-white hover:bg-slate-800 rounded-full transition-all"
-            aria-label="Settings"
-        >
-            <Settings className="w-6 h-6" />
-        </button>
+        {/* Header Area */}
+        <div className="w-full flex flex-col items-center relative h-[140px] justify-center">
+          
+          {/* Settings Button */}
+          <button 
+              onClick={togglePause}
+              className="absolute left-0 top-2 p-2 text-slate-400 hover:text-white hover:bg-slate-800 rounded-full transition-all"
+              aria-label="Settings"
+          >
+              <Settings className="w-6 h-6" />
+          </button>
 
-        <h1 className="text-3xl md:text-5xl font-black tracking-tighter text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 to-pink-600 mb-2 drop-shadow-lg font-[Orbitron]">
-          NEON BREAKER
-        </h1>
-        
-        {showHud && (
-          <div className="w-full flex justify-between items-center bg-slate-900/50 p-3 rounded-xl border border-slate-800 backdrop-blur-sm shadow-lg">
-            <div className="flex flex-col ml-10 md:ml-0">
-              <span className="text-slate-400 text-[10px] font-bold uppercase tracking-widest">Score</span>
-              <span className="text-2xl font-mono text-cyan-400 leading-none">{score.toString().padStart(5, '0')}</span>
-            </div>
-            
-            <div className="flex flex-col items-center hidden sm:flex">
-              <span className="text-slate-400 text-[10px] font-bold uppercase tracking-widest mb-1">Status</span>
-               {gameState === GameState.PLAYING && (
-                  <span className="text-green-400 text-xs font-bold flex items-center gap-2">
-                    <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
-                    {difficulty}
-                  </span>
-               )}
-               {gameState === GameState.PAUSED && <span className="text-yellow-500 text-xs font-bold animate-pulse">PAUSED</span>}
-            </div>
+          <h1 className="text-5xl font-black tracking-tighter text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 to-pink-600 mb-2 drop-shadow-lg font-[Orbitron]">
+            NEON BREAKER
+          </h1>
+          
+          {showHud && (
+            <div className="w-full flex justify-between items-center bg-slate-900/50 p-3 rounded-xl border border-slate-800 backdrop-blur-sm shadow-lg">
+              <div className="flex flex-col ml-10 md:ml-0">
+                <span className="text-slate-400 text-[10px] font-bold uppercase tracking-widest">Score</span>
+                <span className="text-2xl font-mono text-cyan-400 leading-none">{score.toString().padStart(5, '0')}</span>
+              </div>
+              
+              <div className="flex flex-col items-center">
+                <span className="text-slate-400 text-[10px] font-bold uppercase tracking-widest mb-1">Status</span>
+                 {gameState === GameState.PLAYING && (
+                    <span className="text-green-400 text-xs font-bold flex items-center gap-2">
+                      <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
+                      {difficulty}
+                    </span>
+                 )}
+                 {gameState === GameState.PAUSED && <span className="text-yellow-500 text-xs font-bold animate-pulse">PAUSED</span>}
+              </div>
 
-            <div className="flex flex-col items-end">
-              <span className="text-slate-400 text-[10px] font-bold uppercase tracking-widest">Lives</span>
-              <div className="flex gap-1 mt-1">
-                {[...Array(4)].map((_, i) => (
-                  <Heart 
-                    key={i} 
-                    className={`w-5 h-5 transition-all duration-300 ${
-                      i < lives 
-                        ? 'fill-pink-500 text-pink-500 drop-shadow-[0_0_8px_rgba(236,72,153,0.6)]' 
-                        : 'fill-slate-800 text-slate-800 opacity-20'
-                    }`} 
-                  />
-                ))}
+              <div className="flex flex-col items-end">
+                <span className="text-slate-400 text-[10px] font-bold uppercase tracking-widest">Lives</span>
+                <div className="flex gap-1 mt-1">
+                  {[...Array(4)].map((_, i) => (
+                    <Heart 
+                      key={i} 
+                      className={`w-5 h-5 transition-all duration-300 ${
+                        i < lives 
+                          ? 'fill-pink-500 text-pink-500 drop-shadow-[0_0_8px_rgba(236,72,153,0.6)]' 
+                          : 'fill-slate-800 text-slate-800 opacity-20'
+                      }`} 
+                    />
+                  ))}
+                </div>
               </div>
             </div>
-          </div>
-        )}
-      </div>
+          )}
+        </div>
 
-      {/* Game Area */}
-      <div className="flex-1 flex items-center justify-center w-full max-h-full py-4 relative">
-        <div className="relative group max-h-full max-w-full aspect-[4/3]">
+        {/* Game Area */}
+        <div className="relative w-[800px] h-[600px] shrink-0">
             <GameCanvas 
                 key={gameKey}
                 gameState={gameState} 
@@ -341,12 +357,12 @@ const App: React.FC = () => {
             </div>
             )}
         </div>
-      </div>
 
-      {/* Footer Area */}
-      <div className="flex-none mt-2 text-slate-500 text-xs text-center hidden md:block pb-2">
-        <p>Pro Tip: Hold <span className="text-cyan-400 font-bold">DOWN</span> while ball is stuck to aim!</p>
-        <p className="text-[10px] mt-1 opacity-50">Collect the <Heart className="w-3 h-3 inline text-pink-500 fill-current"/> power-up for extra life!</p>
+        {/* Footer Area */}
+        <div className="flex-none mt-2 text-slate-500 text-xs text-center pb-2 h-[50px]">
+          <p>Tip: Hold <span className="text-cyan-400 font-bold">DOWN</span> while ball is stuck to aim!</p>
+          <p className="text-[10px] mt-1 opacity-50">Collect the <Heart className="w-3 h-3 inline text-pink-500 fill-current"/> power-up for extra life!</p>
+        </div>
       </div>
     </div>
   );

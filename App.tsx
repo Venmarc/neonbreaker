@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import GameCanvas from './components/GameCanvas';
 import { GameState, Difficulty } from './types';
-import { Play, RotateCcw, Trophy, Settings, Home, Volume2, VolumeX, ArrowLeft, Heart } from 'lucide-react';
+import { Play, RotateCcw, Trophy, Settings, Home, Volume2, VolumeX, ArrowLeft, Heart, Zap, HelpCircle, X } from 'lucide-react';
 import { playSound, startMusic, stopMusic, setMusicVolume, setSfxVolume, getMusicVolume, getSfxVolume } from './utils/audio';
 import { DIFFICULTY_SETTINGS } from './constants';
 import { useGameScale } from './hooks/useGameScale';
@@ -18,6 +18,8 @@ const App: React.FC = () => {
   const [highScore, setHighScore] = useState(0);
   const [difficulty, setDifficulty] = useState<Difficulty>(Difficulty.MEDIUM);
   const [gameKey, setGameKey] = useState(0); // Used to force remount for restart
+  const [multiplier, setMultiplier] = useState(1);
+  const [showHelp, setShowHelp] = useState(false);
   
   // Responsive Scale
   const scale = useGameScale(BASE_WIDTH, BASE_HEIGHT);
@@ -56,6 +58,7 @@ const App: React.FC = () => {
   const startGame = () => {
     playSound('start');
     setScore(0);
+    setMultiplier(1);
     // Reset lives based on difficulty
     setLives(DIFFICULTY_SETTINGS[difficulty].lives);
     setGameState(GameState.PLAYING);
@@ -64,6 +67,7 @@ const App: React.FC = () => {
   const restartGame = () => {
     setGameKey(prev => prev + 1); // Force remount
     setScore(0);
+    setMultiplier(1);
     // Reset lives based on difficulty
     setLives(DIFFICULTY_SETTINGS[difficulty].lives);
     setGameState(GameState.PLAYING);
@@ -78,10 +82,12 @@ const App: React.FC = () => {
   const togglePause = () => {
     if (gameState === GameState.PLAYING) {
       setGameState(GameState.PAUSED);
+      setShowHelp(false); // Reset help state
     } else if (gameState === GameState.PAUSED) {
       setGameState(GameState.PLAYING);
     } else if (gameState === GameState.MENU) {
       setGameState(GameState.SETTINGS);
+      setShowHelp(false);
     } else if (gameState === GameState.SETTINGS) {
       setGameState(GameState.MENU);
     }
@@ -112,7 +118,18 @@ const App: React.FC = () => {
     </button>
   );
 
+  const PowerUpInfo = ({ color, name, desc }: { color: string, name: string, desc: string }) => (
+    <div className="flex items-start gap-3 bg-slate-800/50 p-2 rounded-lg">
+      <div className="w-4 h-4 rounded-full mt-0.5 shrink-0 shadow-[0_0_8px]" style={{ backgroundColor: color, boxShadow: `0 0 8px ${color}` }}></div>
+      <div>
+        <div className="text-xs font-bold text-white leading-none mb-1">{name}</div>
+        <div className="text-[10px] text-slate-400 leading-tight">{desc}</div>
+      </div>
+    </div>
+  );
+
   const showHud = gameState === GameState.PLAYING || gameState === GameState.PAUSED;
+  const isHotStreak = multiplier >= 3.0;
 
   return (
     <div className="app-container">
@@ -145,7 +162,15 @@ const App: React.FC = () => {
             <div className="w-full flex justify-between items-center bg-slate-900/50 p-3 rounded-xl border border-slate-800 backdrop-blur-sm shadow-lg">
               <div className="flex flex-col ml-10 md:ml-0">
                 <span className="text-slate-400 text-[10px] font-bold uppercase tracking-widest">Score</span>
-                <span className="text-2xl font-mono text-cyan-400 leading-none">{score.toString().padStart(5, '0')}</span>
+                <div className="flex items-baseline gap-2">
+                  <span className="text-2xl font-mono text-cyan-400 leading-none">{score.toString().padStart(5, '0')}</span>
+                  {multiplier > 1 && (
+                    <span className={`text-sm font-bold flex items-center ${isHotStreak ? 'text-yellow-400 animate-pulse' : 'text-slate-300'}`}>
+                      <Zap className={`w-3 h-3 mr-0.5 ${isHotStreak ? 'fill-yellow-400' : ''}`} />
+                      x{multiplier.toFixed(1)}
+                    </span>
+                  )}
+                </div>
               </div>
               
               <div className="flex flex-col items-center">
@@ -189,6 +214,7 @@ const App: React.FC = () => {
                 lives={lives}
                 setLives={setLives}
                 difficulty={difficulty}
+                setMultiplier={setMultiplier}
             />
 
             {/* Menu Overlay */}
@@ -222,89 +248,148 @@ const App: React.FC = () => {
             {/* Settings / Pause Overlay */}
             {(gameState === GameState.PAUSED || gameState === GameState.SETTINGS) && (
                  <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-md flex flex-col items-center justify-center rounded-lg z-30">
-                 <div className="bg-slate-900 border border-slate-700 p-6 rounded-2xl shadow-2xl w-80">
-                    <h2 className="text-2xl font-bold text-white mb-6 text-center font-[Orbitron] tracking-wider">
-                      {gameState === GameState.PAUSED ? 'PAUSED' : 'SETTINGS'}
-                    </h2>
+                 <div className="bg-slate-900 border border-slate-700 p-6 rounded-2xl shadow-2xl w-80 relative overflow-hidden flex flex-col max-h-[90%]">
                     
-                    {/* Audio Controls */}
-                    <div className="space-y-4 mb-8">
-                        <div>
-                            <div className="flex justify-between text-xs text-slate-400 mb-1 uppercase font-bold tracking-wider">
-                                <span>Music Volume</span>
-                                <span>{Math.round(musicVol * 100)}%</span>
-                            </div>
-                            <div className="flex items-center gap-2">
-                                {musicVol > 0 ? <Volume2 className="w-4 h-4 text-cyan-400" /> : <VolumeX className="w-4 h-4 text-slate-600" />}
-                                <input 
-                                    type="range" 
-                                    min="0" 
-                                    max="1" 
-                                    step="0.05" 
-                                    value={musicVol} 
-                                    onChange={handleMusicChange}
-                                    className="w-full accent-cyan-500 h-1 bg-slate-700 rounded-lg appearance-none cursor-pointer"
-                                />
-                            </div>
-                        </div>
-
-                        <div>
-                            <div className="flex justify-between text-xs text-slate-400 mb-1 uppercase font-bold tracking-wider">
-                                <span>SFX Volume</span>
-                                <span>{Math.round(sfxVol * 100)}%</span>
-                            </div>
-                            <div className="flex items-center gap-2">
-                                {sfxVol > 0 ? <Volume2 className="w-4 h-4 text-pink-400" /> : <VolumeX className="w-4 h-4 text-slate-600" />}
-                                <input 
-                                    type="range" 
-                                    min="0" 
-                                    max="1" 
-                                    step="0.05" 
-                                    value={sfxVol} 
-                                    onChange={handleSfxChange}
-                                    className="w-full accent-pink-500 h-1 bg-slate-700 rounded-lg appearance-none cursor-pointer"
-                                />
-                            </div>
-                        </div>
-                    </div>
-
-                    <div className="space-y-3">
+                    {/* Help Toggle Button */}
+                    {!showHelp && (
                         <button 
-                            onClick={togglePause}
-                            className="w-full py-3 bg-white hover:bg-slate-200 text-slate-900 font-bold rounded-lg transition-colors flex items-center justify-center gap-2"
+                            onClick={() => setShowHelp(true)}
+                            className="absolute right-4 top-5 text-slate-500 hover:text-cyan-400 transition-colors z-10"
+                            aria-label="How to Play"
                         >
-                            {gameState === GameState.PAUSED ? (
-                                <>
-                                    <Play className="w-4 h-4 fill-current" />
-                                    RESUME
-                                </>
-                            ) : (
-                                <>
-                                    <ArrowLeft className="w-4 h-4" />
-                                    BACK
-                                </>
-                            )}
+                            <HelpCircle className="w-6 h-6" />
                         </button>
-                        
-                        {gameState === GameState.PAUSED && (
-                            <>
-                                <button 
-                                    onClick={restartGame}
-                                    className="w-full py-3 bg-slate-700 hover:bg-slate-600 text-white font-bold rounded-lg transition-colors flex items-center justify-center gap-2"
-                                >
-                                    <RotateCcw className="w-4 h-4" />
-                                    RESTART
+                    )}
+
+                    {showHelp ? (
+                        <div className="flex flex-col h-full overflow-hidden">
+                            <div className="flex justify-between items-center mb-4 shrink-0">
+                                <h3 className="text-xl font-bold font-[Orbitron] text-white">HOW TO PLAY</h3>
+                                <button onClick={() => setShowHelp(false)} className="text-slate-400 hover:text-white">
+                                    <X className="w-5 h-5" />
                                 </button>
+                            </div>
+                            
+                            <div className="overflow-y-auto pr-2 space-y-5 custom-scrollbar flex-1">
+                                <section>
+                                    <h4 className="text-xs font-bold text-cyan-400 mb-2 uppercase tracking-wider">Controls</h4>
+                                    <div className="space-y-2 text-xs text-slate-300 bg-slate-800/30 p-3 rounded-lg">
+                                        <div className="flex justify-between">
+                                            <span>Move</span>
+                                            <span className="font-mono text-white">Mouse / Arrows / Drag</span>
+                                        </div>
+                                        <div className="flex justify-between">
+                                            <span>Launch</span>
+                                            <span className="font-mono text-white">Space / Up / Tap Top</span>
+                                        </div>
+                                        <div className="flex justify-between">
+                                            <span>Dash</span>
+                                            <span className="font-mono text-white">Shift / Double Tap Bot</span>
+                                        </div>
+                                    </div>
+                                </section>
+
+                                <section>
+                                    <h4 className="text-xs font-bold text-pink-400 mb-2 uppercase tracking-wider">Power-Ups</h4>
+                                    <div className="grid grid-cols-1 gap-2">
+                                        <PowerUpInfo color="#22c55e" name="Enlarge" desc="Expands paddle width" />
+                                        <PowerUpInfo color="#fbbf24" name="Multiball" desc="Spawns extra balls" />
+                                        <PowerUpInfo color="#ef4444" name="Laser" desc="Shoot beams at bricks" />
+                                        <PowerUpInfo color="#facc15" name="Lightning" desc="Chain brick destruction" />
+                                        <PowerUpInfo color="#f87171" name="Cluster" desc="Explosive shrapnel hit" />
+                                        <PowerUpInfo color="#38bdf8" name="Shield" desc="Saves ball from death" />
+                                        <PowerUpInfo color="#4ade80" name="Sticky" desc="Catch and aim ball" />
+                                        <PowerUpInfo color="#ec4899" name="Heart" desc="+1 Life (Mercy Drop)" />
+                                    </div>
+                                </section>
+                            </div>
+                        </div>
+                    ) : (
+                        <>
+                            <h2 className="text-2xl font-bold text-white mb-6 text-center font-[Orbitron] tracking-wider shrink-0">
+                            {gameState === GameState.PAUSED ? 'PAUSED' : 'SETTINGS'}
+                            </h2>
+                            
+                            {/* Audio Controls */}
+                            <div className="space-y-4 mb-8 shrink-0">
+                                <div>
+                                    <div className="flex justify-between text-xs text-slate-400 mb-1 uppercase font-bold tracking-wider">
+                                        <span>Music Volume</span>
+                                        <span>{Math.round(musicVol * 100)}%</span>
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                        {musicVol > 0 ? <Volume2 className="w-4 h-4 text-cyan-400" /> : <VolumeX className="w-4 h-4 text-slate-600" />}
+                                        <input 
+                                            type="range" 
+                                            min="0" 
+                                            max="1" 
+                                            step="0.05" 
+                                            value={musicVol} 
+                                            onChange={handleMusicChange}
+                                            className="w-full accent-cyan-500 h-1 bg-slate-700 rounded-lg appearance-none cursor-pointer"
+                                        />
+                                    </div>
+                                </div>
+
+                                <div>
+                                    <div className="flex justify-between text-xs text-slate-400 mb-1 uppercase font-bold tracking-wider">
+                                        <span>SFX Volume</span>
+                                        <span>{Math.round(sfxVol * 100)}%</span>
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                        {sfxVol > 0 ? <Volume2 className="w-4 h-4 text-pink-400" /> : <VolumeX className="w-4 h-4 text-slate-600" />}
+                                        <input 
+                                            type="range" 
+                                            min="0" 
+                                            max="1" 
+                                            step="0.05" 
+                                            value={sfxVol} 
+                                            onChange={handleSfxChange}
+                                            className="w-full accent-pink-500 h-1 bg-slate-700 rounded-lg appearance-none cursor-pointer"
+                                        />
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div className="space-y-3 shrink-0">
                                 <button 
-                                    onClick={returnToMenu}
-                                    className="w-full py-3 border border-slate-600 hover:bg-slate-800 text-slate-400 hover:text-white font-bold rounded-lg transition-colors flex items-center justify-center gap-2"
+                                    onClick={togglePause}
+                                    className="w-full py-3 bg-white hover:bg-slate-200 text-slate-900 font-bold rounded-lg transition-colors flex items-center justify-center gap-2"
                                 >
-                                    <Home className="w-4 h-4" />
-                                    MAIN MENU
+                                    {gameState === GameState.PAUSED ? (
+                                        <>
+                                            <Play className="w-4 h-4 fill-current" />
+                                            RESUME
+                                        </>
+                                    ) : (
+                                        <>
+                                            <ArrowLeft className="w-4 h-4" />
+                                            BACK
+                                        </>
+                                    )}
                                 </button>
-                            </>
-                        )}
-                    </div>
+                                
+                                {gameState === GameState.PAUSED && (
+                                    <>
+                                        <button 
+                                            onClick={restartGame}
+                                            className="w-full py-3 bg-slate-700 hover:bg-slate-600 text-white font-bold rounded-lg transition-colors flex items-center justify-center gap-2"
+                                        >
+                                            <RotateCcw className="w-4 h-4" />
+                                            RESTART
+                                        </button>
+                                        <button 
+                                            onClick={returnToMenu}
+                                            className="w-full py-3 border border-slate-600 hover:bg-slate-800 text-slate-400 hover:text-white font-bold rounded-lg transition-colors flex items-center justify-center gap-2"
+                                        >
+                                            <Home className="w-4 h-4" />
+                                            MAIN MENU
+                                        </button>
+                                    </>
+                                )}
+                            </div>
+                        </>
+                    )}
                  </div>
                  </div>
             )}

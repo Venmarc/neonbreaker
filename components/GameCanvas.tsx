@@ -4,11 +4,22 @@ import {
   BALL_RADIUS, COLORS, BRICK_ROW_COUNT, BRICK_COLUMN_COUNT, 
   BRICK_WIDTH, BRICK_HEIGHT, BRICK_PADDING, BRICK_OFFSET_TOP, BRICK_OFFSET_LEFT,
   DIFFICULTY_SETTINGS, POWERUP_CHANCE, POWERUP_COLORS, POWERUP_SPEED,
-  ENLARGE_DURATION, SHIELD_DURATION, LASER_DELAY, POWERUP_WARNING_MS, STICKY_DURATION
+  ENLARGE_DURATION, SHIELD_DURATION, LASER_DELAY, POWERUP_WARNING_MS, STICKY_DURATION,
+  DASH_COOLDOWN_MS, DASH_DISTANCE, LIGHTNING_DURATION, CLUSTER_DURATION
 } from '../constants';
-import { GameState, Difficulty, Ball, Paddle, Brick, Particle, PowerUp, PowerUpType } from '../types';
+import { GameState, Difficulty, Ball, Paddle, Brick, Particle, PowerUp, PowerUpType, LightningArc, Shrapnel, PaddleGhost } from '../types';
 import { detectCircleRectCollision, createParticles, updateParticles } from '../utils/physics';
 import { playSound } from '../utils/audio';
+
+interface FloatingText {
+  id: number;
+  x: number;
+  y: number;
+  text: string;
+  life: number; // 1.0 to 0.0
+  color: string;
+  dy: number;
+}
 
 interface GameCanvasProps {
   gameState: GameState;
@@ -18,10 +29,11 @@ interface GameCanvasProps {
   lives: number;
   setLives: (lives: number | ((prev: number) => number)) => void;
   difficulty: Difficulty;
+  setMultiplier: (multiplier: number) => void;
 }
 
 const GameCanvas: React.FC<GameCanvasProps> = ({ 
-  gameState, setGameState, score, setScore, lives, setLives, difficulty 
+  gameState, setGameState, score, setScore, lives, setLives, difficulty, setMultiplier 
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const requestRef = useRef<number>(0);
@@ -31,6 +43,14 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
   const powerUpsRef = useRef<PowerUp[]>([]);
   const bricksRef = useRef<Brick[]>([]);
   const particlesRef = useRef<Particle[]>([]);
+  const floatingTextsRef = useRef<FloatingText[]>([]);
+  const streakRef = useRef<number>(0);
+  
+  // New Effect Refs
+  const lightningArcsRef = useRef<LightningArc[]>([]);
+  const shrapnelsRef = useRef<Shrapnel[]>([]);
+  const paddleGhostsRef = useRef<PaddleGhost[]>([]);
+  
   const paddleRef = useRef<Paddle>({
     x: (CANVAS_WIDTH - PADDLE_WIDTH) / 2,
     y: CANVAS_HEIGHT - PADDLE_OFFSET_BOTTOM,
@@ -38,7 +58,8 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     height: PADDLE_HEIGHT,
     color: COLORS.paddle,
     isEnlarged: false,
-    flashTimer: 0
+    flashTimer: 0,
+    dashCooldown: 0
   });
   
   // Visual effects for paddle hits
@@ -50,17 +71,17 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     x: number;
     y: number;
     zone: 'UPPER' | 'LOWER' | null;
+    lastTap: number; // For double tap detection
   }>({
     active: false,
     x: 0,
     y: 0,
-    zone: null
+    zone: null,
+    lastTap: 0
   });
 
-  // Track if a heart has spawned this game/level via normal RNG
-  const hasSpawnedHeartRef = useRef<boolean>(false);
-
-  // Critical Mode Refs (Pity Heart Logic)
+  // Mercy Event State (Last Stand)
+  const hasTriggeredMercyEventRef = useRef<boolean>(false);
   const isCriticalModeRef = useRef<boolean>(false);
   const criticalHitCounterRef = useRef<number>(0);
   const criticalHeartTargetRef = useRef<number>(0);
@@ -71,11 +92,15 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     shieldEndTime: number;
     laserFireTime: number;
     stickyEndTime: number;
+    lightningEndTime: number;
+    clusterEndTime: number;
   }>({
     enlargeEndTime: 0,
     shieldEndTime: 0,
     laserFireTime: 0,
-    stickyEndTime: 0
+    stickyEndTime: 0,
+    lightningEndTime: 0,
+    clusterEndTime: 0
   });
 
   const shieldActiveRef = useRef<boolean>(false);
@@ -85,11 +110,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
 
   // Initialize Bricks
   const initBricks = useCallback(() => {
-    // Reset level-specific flags
-    hasSpawnedHeartRef.current = false;
-    // Reset critical mode on new level, though lives might stay same
-    // We'll let the lives useEffect handle critical mode activation
-
+    // Reset critical mode on new level
     const newBricks: Brick[] = [];
     for (let c = 0; c < BRICK_COLUMN_COUNT; c++) {
       for (let r = 0; r < BRICK_ROW_COUNT; r++) {
@@ -118,19 +139,25 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
       height: PADDLE_HEIGHT,
       color: COLORS.paddle,
       isEnlarged: false,
-      flashTimer: 0
+      flashTimer: 0,
+      dashCooldown: 0
     };
     // Clear effects
     shieldActiveRef.current = false;
     laserBeamRef.current = null;
     paddleImpactsRef.current = [];
+    paddleGhostsRef.current = [];
+    lightningArcsRef.current = [];
+    shrapnelsRef.current = [];
+    
     powerUpStateRef.current = {
       enlargeEndTime: 0,
       shieldEndTime: 0,
       laserFireTime: 0,
-      stickyEndTime: 0
+      stickyEndTime: 0,
+      lightningEndTime: 0,
+      clusterEndTime: 0
     };
-    // Note: powerUpsRef is not cleared here as this is just paddle reset
   }, [difficulty]);
 
   const spawnBall = useCallback((isActive: boolean = false, x?: number, y?: number, dx?: number, dy?: number) => {
@@ -144,7 +171,8 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
       dy: dy ?? 0,
       speed: settings.ballSpeed,
       active: isActive,
-      stuckOffset: 0 // Initialize centered
+      stuckOffset: 0, // Initialize centered
+      trail: [] // Initialize empty trail
     };
     return newBall;
   }, [difficulty]);
@@ -163,7 +191,9 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
       enlargeEndTime: 0,
       shieldEndTime: 0,
       laserFireTime: 0,
-      stickyEndTime: 0
+      stickyEndTime: 0,
+      lightningEndTime: 0,
+      clusterEndTime: 0
     };
 
     // Only clear falling powerups/particles on a full reset (Menu/New Game), not on death
@@ -171,16 +201,32 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         particlesRef.current = [];
         powerUpsRef.current = [];
         paddleImpactsRef.current = [];
+        floatingTextsRef.current = [];
+        lightningArcsRef.current = [];
+        shrapnelsRef.current = [];
+        paddleGhostsRef.current = [];
+        streakRef.current = 0;
+        setMultiplier(1);
+        
+        // Reset Mercy Event for new game
+        hasTriggeredMercyEventRef.current = false;
+        isCriticalModeRef.current = false;
+        criticalHitCounterRef.current = 0;
     }
-  }, [spawnBall, difficulty]);
+  }, [spawnBall, difficulty, setMultiplier]);
 
   const launchBalls = useCallback(() => {
     if (gameState !== GameState.PLAYING) return;
     
+    // Reset streak on launch (specifically covers the case where sticky powerup held the streak)
+    streakRef.current = 0;
+    setMultiplier(1);
+
     const inactiveBalls = ballsRef.current.filter(b => !b.active);
     if (inactiveBalls.length > 0) {
       inactiveBalls.forEach(ball => {
          ball.active = true;
+         ball.trail = []; // Reset trail on launch
          // Use offset to calculate angle, similar to paddle hit logic
          const offset = ball.stuckOffset ?? 0;
          const hitPoint = offset / (paddleRef.current.width / 2);
@@ -207,7 +253,54 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
       });
       playSound('paddle');
     }
-  }, [gameState]);
+  }, [gameState, setMultiplier]);
+
+  const addFloatingText = (x: number, y: number, text: string, color: string = '#ffffff') => {
+    floatingTextsRef.current.push({
+      id: Math.random(),
+      x,
+      y,
+      text,
+      life: 1.0,
+      color,
+      dy: -1.5
+    });
+  };
+
+  const performDash = useCallback((direction: 'left' | 'right') => {
+    const now = Date.now();
+    if (now < paddleRef.current.dashCooldown) return;
+
+    // Set Cooldown
+    paddleRef.current.dashCooldown = now + DASH_COOLDOWN_MS;
+    playSound('paddle'); // Re-use paddle sound or add dash sound if avail
+
+    const startX = paddleRef.current.x;
+    let targetX = startX + (direction === 'left' ? -DASH_DISTANCE : DASH_DISTANCE);
+
+    // Clamp
+    if (targetX < 0) targetX = 0;
+    if (targetX + paddleRef.current.width > CANVAS_WIDTH) targetX = CANVAS_WIDTH - paddleRef.current.width;
+
+    // Create Ghost Trail
+    // We add 3 ghosts interpolated between start and end
+    const steps = 3;
+    for (let i = 0; i < steps; i++) {
+        const ratio = i / steps;
+        paddleGhostsRef.current.push({
+            id: Math.random(),
+            x: startX + (targetX - startX) * ratio,
+            y: paddleRef.current.y,
+            width: paddleRef.current.width,
+            height: paddleRef.current.height,
+            life: 1.0 - (ratio * 0.5) // Fade older ghosts faster
+        });
+    }
+
+    // Move Paddle Instantly
+    paddleRef.current.x = targetX;
+
+  }, []);
 
   // Handle Touch Inputs
   const getCanvasPos = (e: React.TouchEvent) => {
@@ -225,9 +318,22 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
 
   const handleTouchStart = useCallback((e: React.TouchEvent) => {
     const { x, y } = getCanvasPos(e);
+    const now = Date.now();
     const zone = y < CANVAS_HEIGHT / 2 ? 'UPPER' : 'LOWER';
-    touchRef.current = { active: true, x, y, zone };
-  }, []);
+    
+    // Double Tap Detection for Dash
+    if (zone === 'LOWER' && now - touchRef.current.lastTap < 300) {
+        // Determine side relative to paddle center
+        const paddleCenter = paddleRef.current.x + paddleRef.current.width / 2;
+        if (x < paddleCenter) performDash('left');
+        else performDash('right');
+        touchRef.current.lastTap = 0; // Consume tap
+    } else {
+        touchRef.current.lastTap = now;
+    }
+
+    touchRef.current = { ...touchRef.current, active: true, x, y, zone };
+  }, [performDash]);
 
   const handleTouchMove = useCallback((e: React.TouchEvent) => {
     const { x, y } = getCanvasPos(e);
@@ -257,7 +363,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     switch (type) {
       case PowerUpType.HEART:
         setLives(prev => Math.min(prev + 1, 4));
-        // Note: isCriticalModeRef logic is handled in the lives useEffect
+        addFloatingText(x, y - 20, '+1 LIFE', '#ec4899');
         break;
 
       case PowerUpType.ENLARGE:
@@ -268,6 +374,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
           paddleRef.current.x -= (PADDLE_WIDTH_ENLARGED - oldWidth) / 2; // Center expansion
           paddleRef.current.isEnlarged = true;
         }
+        addFloatingText(x, y - 20, 'BIG PADDLE', '#22c55e');
         break;
 
       case PowerUpType.MULTIBALL:
@@ -285,21 +392,151 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
            const b = spawnBall(true, paddleRef.current.x + paddleRef.current.width/2, paddleRef.current.y - 20, 2, -4);
            ballsRef.current.push(b);
         }
+        addFloatingText(x, y - 20, 'MULTIBALL', '#fbbf24');
         break;
 
       case PowerUpType.SHIELD:
         powerUpStateRef.current.shieldEndTime = now + SHIELD_DURATION;
         shieldActiveRef.current = true;
+        addFloatingText(x, y - 20, 'SHIELD', '#38bdf8');
         break;
       
       case PowerUpType.STICKY:
         powerUpStateRef.current.stickyEndTime = now + STICKY_DURATION;
+        addFloatingText(x, y - 20, 'STICKY', '#4ade80');
         break;
 
       case PowerUpType.LASER:
-        // Schedule laser fire using timestamp
         powerUpStateRef.current.laserFireTime = now + LASER_DELAY;
+        addFloatingText(x, y - 20, 'LASER', '#ef4444');
         break;
+
+      case PowerUpType.LIGHTNING:
+        powerUpStateRef.current.lightningEndTime = now + LIGHTNING_DURATION;
+        addFloatingText(x, y - 20, 'LIGHTNING', '#facc15');
+        break;
+
+      case PowerUpType.CLUSTER:
+        powerUpStateRef.current.clusterEndTime = now + CLUSTER_DURATION;
+        addFloatingText(x, y - 20, 'CLUSTER', '#f87171');
+        break;
+    }
+  };
+
+  const spawnShrapnel = (x: number, y: number) => {
+    const count = 3 + Math.floor(Math.random() * 3); // 3 to 5
+    for (let i = 0; i < count; i++) {
+        const angle = Math.random() * Math.PI * 2;
+        const speed = 6 + Math.random() * 2;
+        shrapnelsRef.current.push({
+            id: Math.random(),
+            x,
+            y,
+            dx: Math.cos(angle) * speed,
+            dy: Math.sin(angle) * speed,
+            radius: 4,
+            life: 40, // Frames
+            color: '#f87171'
+        });
+    }
+  };
+
+  const triggerLightning = (originX: number, originY: number) => {
+    // Find active bricks
+    const activeBricks = bricksRef.current.filter(b => b.status === 1);
+    
+    // Calculate distances
+    const targets = activeBricks.map(b => {
+        const cx = b.x + b.width / 2;
+        const cy = b.y + b.height / 2;
+        const dist = Math.sqrt(Math.pow(cx - originX, 2) + Math.pow(cy - originY, 2));
+        return { brick: b, dist, cx, cy };
+    });
+
+    // Sort by distance and take closest 3 within range
+    const range = 150;
+    const closest = targets.filter(t => t.dist < range).sort((a, b) => a.dist - b.dist).slice(0, 3);
+
+    closest.forEach(target => {
+        // Destroy
+        target.brick.status = 0;
+        setScore(prev => prev + target.brick.value);
+        
+        // Visual Arc
+        lightningArcsRef.current.push({
+            id: Math.random(),
+            x1: originX,
+            y1: originY,
+            x2: target.cx,
+            y2: target.cy,
+            life: 1.0
+        });
+        
+        // Add particles
+        particlesRef.current.push(...createParticles(target.cx, target.cy, '#facc15'));
+        
+        // Chain reaction? No, let's keep it simple to avoid wiping screen in one go.
+        // But we should attempt drop
+        attemptPowerUpDrop(target.cx, target.cy);
+    });
+  };
+
+  const attemptPowerUpDrop = (x: number, y: number) => {
+    let spawnedPowerUp = false;
+
+    // --- MERCY EVENT LOGIC (Last Stand) ---
+    // If critical mode is active (1 life remaining), we check the counter.
+    if (isCriticalModeRef.current) {
+        criticalHitCounterRef.current += 1;
+        
+        // Spawn guaranteed Mercy Heart if we hit the target count
+        if (criticalHitCounterRef.current >= criticalHeartTargetRef.current) {
+             powerUpsRef.current.push({
+                 id: Math.random(),
+                 x: x,
+                 y: y,
+                 width: 20,
+                 height: 20,
+                 // SLOWER SPEED for Mercy Heart (0.8x)
+                 dy: POWERUP_SPEED * 0.8, 
+                 type: PowerUpType.HEART,
+                 active: true,
+                 // GOLD color for Mercy Heart
+                 color: '#ffd700' 
+             });
+             
+             // Mark as triggered so it only happens once per game
+             hasTriggeredMercyEventRef.current = true;
+             
+             // Disable critical mode now that we've spawned it
+             isCriticalModeRef.current = false; 
+             
+             spawnedPowerUp = true;
+        }
+    }
+
+    // --- NORMAL DROP LOGIC ---
+    if (!spawnedPowerUp && Math.random() < POWERUP_CHANCE) {
+       let types = Object.values(PowerUpType);
+       
+       // Filter out hearts from random drops
+       types = types.filter(t => t !== PowerUpType.HEART);
+
+       if (types.length > 0) {
+           const type = types[Math.floor(Math.random() * types.length)];
+           
+           powerUpsRef.current.push({
+             id: Math.random(),
+             x: x,
+             y: y,
+             width: 20,
+             height: 20,
+             dy: POWERUP_SPEED,
+             type: type,
+             active: true,
+             color: POWERUP_COLORS[type]
+           });
+       }
     }
   };
 
@@ -320,32 +557,38 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     
     bricksRef.current.forEach(b => {
        if (b.status === 1) {
-         // Check if beam rect overlaps brick rect horizontally
-         // Beam X range: [paddleCenter - beamHalfWidth, paddleCenter + beamHalfWidth]
-         // Brick X range: [b.x, b.x + b.width]
          const overlap = (paddleCenter + beamHalfWidth >= b.x) && 
                          (paddleCenter - beamHalfWidth <= b.x + b.width);
                          
          if (overlap) {
             b.status = 0;
-            setScore(s => s + b.value);
+            setScore(s => s + b.value); 
+            addFloatingText(b.x + b.width / 2, b.y, `+${b.value}`, '#ffffff');
             particlesRef.current.push(...createParticles(b.x + b.width / 2, b.y + b.height / 2, b.color));
             playSound('brick');
-            // Laser hits shouldn't trigger critical heart logic directly to keep it focused on paddle play,
-            // but we can allow it if desired. For now, sticking to standard collision loop logic.
+            
+            // Check for Chain Lightning / Cluster even on laser hit? 
+            // The prompt says "When the ball ... hits". But let's apply it here for fun consistency if user asks later. 
+            // For now, strictly follow prompt: "When the ball ... hits". So Laser is just basic destroy.
+            
+            attemptPowerUpDrop(b.x + b.width / 2, b.y + b.height / 2);
          }
        }
     });
   };
 
-  // Logic to monitor lives and set critical mode
+  // Logic to monitor lives and set critical mode for Last Stand
   useEffect(() => {
-    if (lives === 1) {
-        isCriticalModeRef.current = true;
-        criticalHitCounterRef.current = 0;
-        // Random target between 6 and 12
-        criticalHeartTargetRef.current = Math.floor(Math.random() * 7) + 6; 
+    // Activate Mercy Mode if at 1 life AND we haven't used the one-time event yet
+    if (lives === 1 && !hasTriggeredMercyEventRef.current) {
+        if (!isCriticalModeRef.current) {
+            isCriticalModeRef.current = true;
+            criticalHitCounterRef.current = 0;
+            // Random target between 6 and 12 hits before spawn
+            criticalHeartTargetRef.current = Math.floor(Math.random() * 7) + 6; 
+        }
     } else {
+        // If lives > 1, we are safe (or already used it), so disable mode
         isCriticalModeRef.current = false;
     }
   }, [lives]);
@@ -361,6 +604,15 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
            launchBalls();
         }
       }
+      // Dash Input (Shift)
+      if (e.key === 'Shift') {
+        // Detect movement direction from held keys
+        if (keysPressed.current['ArrowLeft'] || keysPressed.current['KeyA']) {
+            performDash('left');
+        } else if (keysPressed.current['ArrowRight'] || keysPressed.current['KeyD']) {
+            performDash('right');
+        }
+      }
     };
     const handleKeyUp = (e: KeyboardEvent) => {
       keysPressed.current[e.code] = false;
@@ -373,7 +625,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keyup', handleKeyUp);
     };
-  }, [gameState, launchBalls]);
+  }, [gameState, launchBalls, performDash]);
 
   // Game Loop
   const update = useCallback(() => {
@@ -382,6 +634,8 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
 
     // --- TIMED POWERUPS LOGIC ---
     const stickyActive = now < powerUpStateRef.current.stickyEndTime;
+    const lightningActive = now < powerUpStateRef.current.lightningEndTime;
+    const clusterActive = now < powerUpStateRef.current.clusterEndTime;
 
     // Check Enlarge Expiry
     if (paddleRef.current.isEnlarged && now > powerUpStateRef.current.enlargeEndTime) {
@@ -403,6 +657,10 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     // Update Paddle Color State
     if (stickyActive) {
       paddleRef.current.color = POWERUP_COLORS[PowerUpType.STICKY];
+    } else if (lightningActive) {
+      paddleRef.current.color = POWERUP_COLORS[PowerUpType.LIGHTNING];
+    } else if (clusterActive) {
+      paddleRef.current.color = POWERUP_COLORS[PowerUpType.CLUSTER];
     } else {
       paddleRef.current.color = COLORS.paddle;
     }
@@ -418,7 +676,6 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
       if (isTouchActive && touchRef.current.zone === 'UPPER') {
          // Touch Aiming (Upper Zone)
          const center = CANVAS_WIDTH / 2;
-         // Map touch X to offset (-1 to 1 relative to center)
          const clampedX = Math.max(0, Math.min(CANVAS_WIDTH, touchRef.current.x));
          const factor = (clampedX - center) / (CANVAS_WIDTH / 2); 
          
@@ -429,7 +686,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
              ball.stuckOffset = newOffset;
          });
       } else if (isHoldingDown) {
-         // Keyboard Aiming (Down + Left/Right)
+         // Keyboard Aiming
          const aimSpeed = 5;
          stuckBalls.forEach(ball => {
             if (ball.stuckOffset === undefined) ball.stuckOffset = 0;
@@ -441,7 +698,6 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                ball.stuckOffset -= aimSpeed;
             }
             
-            // Clamp offset to keep ball on paddle
             const maxOffset = (paddleRef.current.width / 2) - ball.radius;
             if (ball.stuckOffset > maxOffset) ball.stuckOffset = maxOffset;
             if (ball.stuckOffset < -maxOffset) ball.stuckOffset = -maxOffset;
@@ -450,13 +706,10 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     }
 
     // PADDLE MOVEMENT LOGIC
-    // Touch overrides keyboard if active in LOWER zone
     if (isTouchActive && touchRef.current.zone === 'LOWER') {
         const targetX = touchRef.current.x - paddleRef.current.width / 2;
         const dx = targetX - paddleRef.current.x;
-        
-        // 1:1 Mapping with speed cap to prevent physics tunneling
-        const maxStep = 60; // Max pixels per frame
+        const maxStep = 60; 
         
         if (Math.abs(dx) > maxStep) {
             paddleRef.current.x += Math.sign(dx) * maxStep;
@@ -464,16 +717,11 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
             paddleRef.current.x = targetX;
         }
 
-        // Clamp to screen bounds
-        if (paddleRef.current.x < 0) {
-          paddleRef.current.x = 0;
-        }
-        if (paddleRef.current.x + paddleRef.current.width > CANVAS_WIDTH) {
-          paddleRef.current.x = CANVAS_WIDTH - paddleRef.current.width;
-        }
+        if (paddleRef.current.x < 0) paddleRef.current.x = 0;
+        if (paddleRef.current.x + paddleRef.current.width > CANVAS_WIDTH) paddleRef.current.x = CANVAS_WIDTH - paddleRef.current.width;
         
     } else if (!isHoldingDown || stuckBalls.length === 0) {
-      // Normal Keyboard Mode: Move Paddle (Only if not in Aim Mode)
+      // Normal Keyboard Mode
       if (keysPressed.current['ArrowRight'] || keysPressed.current['KeyD']) {
         paddleRef.current.x += paddleSpeed;
         if (paddleRef.current.x + paddleRef.current.width > CANVAS_WIDTH) {
@@ -491,8 +739,6 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     // --- BALL LOGIC ---
     let activeBallsCount = 0;
     
-    // We clean up "dead" balls at the end, but here we process movement.
-    
     ballsRef.current.forEach(ball => {
       if (!ball.active) {
         // Stick to paddle
@@ -500,8 +746,6 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         ball.x = paddleRef.current.x + paddleRef.current.width / 2 + offset;
         ball.y = paddleRef.current.y - ball.radius - 2;
         
-        // Clamp ball to paddle width (in case paddle shrunk)
-        // Also updates the stuckOffset if it was out of bounds
         const halfPaddle = paddleRef.current.width / 2;
         const center = paddleRef.current.x + halfPaddle;
         
@@ -513,9 +757,18 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
             ball.x = center + halfPaddle - ball.radius;
             ball.stuckOffset = halfPaddle - ball.radius;
         }
+        
+        ball.trail = [];
 
       } else {
         activeBallsCount++;
+        
+        // Update Trail
+        ball.trail.push({ x: ball.x, y: ball.y });
+        if (ball.trail.length > 8) {
+            ball.trail.shift();
+        }
+
         ball.x += ball.dx;
         ball.y += ball.dy;
 
@@ -542,10 +795,9 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
              ball.y = CANVAS_HEIGHT - ball.radius;
              ball.dy = -Math.abs(ball.dy);
              playSound('paddle'); 
-             // Note: Shield doesn't expire on hit, only on time
            } else {
              ball.active = false; 
-             // Force it well below canvas to ensure filter removes it next
+             ball.trail = [];
              ball.y = CANVAS_HEIGHT + 100;
            }
         }
@@ -556,14 +808,15 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
            if (stickyActive) {
              // Catch the ball
              ball.active = false;
+             ball.trail = [];
              ball.stuckOffset = ball.x - (paddleRef.current.x + paddleRef.current.width / 2);
              ball.dx = 0;
              ball.dy = 0;
              playSound('paddle');
            } else {
              playSound('paddle');
-
-             // VISUAL EFFECT: Paddle Flash & Ripple
+             streakRef.current = 0;
+             setMultiplier(1);
              paddleRef.current.flashTimer = 4;
              paddleImpactsRef.current.push({
                id: Math.random(),
@@ -571,37 +824,27 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                life: 1.0
              });
 
-             // Simple physics: change angle based on hit position
              let hitPoint = ball.x - (paddleRef.current.x + paddleRef.current.width / 2);
              hitPoint = hitPoint / (paddleRef.current.width / 2); // -1 to 1
-
-             // RULE: Randomness/Jitter (±10% of width variance)
              hitPoint += (Math.random() - 0.5) * 0.1; 
-             
-             // Clamp for sanity
              hitPoint = Math.max(-1, Math.min(1, hitPoint));
              
-             const angle = hitPoint * (Math.PI / 3); // Max 60 deg
+             const angle = hitPoint * (Math.PI / 3); 
              const speed = Math.sqrt(ball.dx*ball.dx + ball.dy*ball.dy);
-             // Cap speed
              const newSpeed = Math.min(speed * 1.05, 14); 
              
              ball.dx = newSpeed * Math.sin(angle);
              ball.dy = -newSpeed * Math.cos(angle);
 
-             // RULE: Minimum Horizontal Velocity
              const MIN_DX = 1.0;
              if (Math.abs(ball.dx) < MIN_DX) {
                 let dir = Math.sign(hitPoint);
                 if (dir === 0) dir = Math.random() > 0.5 ? 1 : -1;
-                
                 ball.dx = dir * MIN_DX;
-                // Recalculate DY to maintain exact speed vector length
                 const remainingSpeedSq = Math.max(0, (newSpeed * newSpeed) - (ball.dx * ball.dx));
                 ball.dy = -Math.sqrt(remainingSpeedSq);
              }
              
-             // Ensure it moves up
              if (ball.dy > 0) ball.dy = -ball.dy;
            }
         }
@@ -613,14 +856,18 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
             const collision = detectCircleRectCollision(ball, b);
             if (collision.hit) {
               b.status = 0;
-              setScore(prev => prev + b.value);
+              streakRef.current += 1;
+              const currentMultiplier = 1 + (streakRef.current * 0.1);
+              setMultiplier(currentMultiplier);
+              const points = Math.floor(b.value * currentMultiplier);
+              setScore(prev => prev + points);
+              addFloatingText(b.x + b.width / 2, b.y, `+${points}`, '#ffffff');
+
               playSound('brick');
               particlesRef.current.push(...createParticles(b.x + b.width / 2, b.y + b.height / 2, b.color));
 
-              // Physics Response & Position Correction
+              // Physics Response
               if (collision.axis === 'x') {
-                // Correct position to prevent tunneling/sticky behavior
-                // Push ball out of brick based on which side relative to center
                 const dir = ball.x < (b.x + b.width / 2) ? -1 : 1;
                 ball.x += dir * (collision.overlap || 1);
                 ball.dx = -ball.dx;
@@ -630,61 +877,15 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                 ball.dy = -ball.dy;
               }
 
-              // Determine PowerUp Drop
-              let spawnedPowerUp = false;
-
-              // CRITICAL MODE LOGIC (Pity Heart)
-              if (isCriticalModeRef.current) {
-                  criticalHitCounterRef.current += 1;
-                  
-                  // Spawn heart if we hit the target count
-                  if (criticalHitCounterRef.current === criticalHeartTargetRef.current) {
-                       powerUpsRef.current.push({
-                           id: Math.random(),
-                           x: b.x + b.width / 2,
-                           y: b.y + b.height / 2,
-                           width: 20,
-                           height: 20,
-                           dy: POWERUP_SPEED,
-                           type: PowerUpType.HEART,
-                           active: true,
-                           color: POWERUP_COLORS[PowerUpType.HEART]
-                       });
-                       isCriticalModeRef.current = false; // Disable mode after spawning
-                       spawnedPowerUp = true;
-                  }
+              // --- SPECIAL POWERUP EFFECTS ---
+              if (lightningActive) {
+                triggerLightning(b.x + b.width / 2, b.y + b.height / 2);
+              }
+              if (clusterActive) {
+                spawnShrapnel(b.x + b.width / 2, b.y + b.height / 2);
               }
 
-              // Normal Random Drop (if not already spawned by critical logic)
-              if (!spawnedPowerUp && Math.random() < POWERUP_CHANCE) {
-                 let types = Object.values(PowerUpType);
-                 
-                 // Heart Constraint: Only if lives == 1 AND hasn't spawned yet via normal means
-                 // If we are in critical mode, we disable random hearts to rely on the deterministic logic
-                 if (lives > 1 || hasSpawnedHeartRef.current || isCriticalModeRef.current) {
-                   types = types.filter(t => t !== PowerUpType.HEART);
-                 }
-
-                 if (types.length > 0) {
-                     const type = types[Math.floor(Math.random() * types.length)];
-                     
-                     if (type === PowerUpType.HEART) {
-                         hasSpawnedHeartRef.current = true;
-                     }
-
-                     powerUpsRef.current.push({
-                       id: Math.random(),
-                       x: b.x + b.width / 2,
-                       y: b.y + b.height / 2,
-                       width: 20,
-                       height: 20,
-                       dy: POWERUP_SPEED,
-                       type: type,
-                       active: true,
-                       color: POWERUP_COLORS[type]
-                     });
-                 }
-              }
+              attemptPowerUpDrop(b.x + b.width / 2, b.y + b.height / 2);
               break; 
             }
           }
@@ -692,14 +893,44 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
       }
     });
 
+    // --- SHRAPNEL LOGIC ---
+    shrapnelsRef.current.forEach(s => {
+        s.x += s.dx;
+        s.y += s.dy;
+        s.life -= 1;
+        
+        // Wall Collisions
+        if (s.x < 0 || s.x > CANVAS_WIDTH) s.dx = -s.dx;
+        if (s.y < 0) s.dy = -s.dy;
+
+        // Brick Collisions
+        for (let i = 0; i < bricksRef.current.length; i++) {
+            const b = bricksRef.current[i];
+            if (b.status === 1) {
+                const rect = { x: b.x, y: b.y, width: b.width, height: b.height };
+                // Simple point check or circle check
+                if (s.x > rect.x && s.x < rect.x + rect.width &&
+                    s.y > rect.y && s.y < rect.y + rect.height) {
+                        b.status = 0;
+                        setScore(prev => prev + b.value);
+                        particlesRef.current.push(...createParticles(s.x, s.y, b.color));
+                        playSound('brick');
+                        s.life = 0; // Destroy shrapnel on hit
+                        break;
+                }
+            }
+        }
+    });
+    shrapnelsRef.current = shrapnelsRef.current.filter(s => s.life > 0 && s.y < CANVAS_HEIGHT);
+
+
     // Check Lives
-    // Filter balls: Keep if active, or if stuck on paddle (approx y < 580). 
-    // Dead balls are pushed to y > 600.
     ballsRef.current = ballsRef.current.filter(b => b.y < CANVAS_HEIGHT + 50); 
-    
     if (ballsRef.current.length === 0) {
       const newLives = lives - 1;
       setLives(newLives);
+      streakRef.current = 0; // Reset streak on life loss
+      setMultiplier(1);
       
       if (newLives <= 0) {
         playSound('gameover');
@@ -734,12 +965,27 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
       }
     }
 
-    // --- PARTICLES ---
+    // --- EFFECTS UPDATE ---
     updateParticles(particlesRef.current);
     
-    // --- PADDLE IMPACTS ---
+    // Paddle Impacts
     paddleImpactsRef.current.forEach(p => p.life -= 0.05);
     paddleImpactsRef.current = paddleImpactsRef.current.filter(p => p.life > 0);
+
+    // Paddle Ghosts
+    paddleGhostsRef.current.forEach(g => g.life -= 0.1);
+    paddleGhostsRef.current = paddleGhostsRef.current.filter(g => g.life > 0);
+
+    // Lightning Arcs
+    lightningArcsRef.current.forEach(arc => arc.life -= 0.1);
+    lightningArcsRef.current = lightningArcsRef.current.filter(arc => arc.life > 0);
+
+    // Floating Texts
+    floatingTextsRef.current.forEach(t => {
+      t.y += t.dy;
+      t.life -= 0.02;
+    });
+    floatingTextsRef.current = floatingTextsRef.current.filter(t => t.life > 0);
 
     // Win Condition
     const remainingBricks = bricksRef.current.filter(b => b.status === 1).length;
@@ -748,7 +994,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
        setGameState(GameState.VICTORY);
     }
 
-  }, [gameState, difficulty, resetLevel, setGameState, setLives, setScore, lives]);
+  }, [gameState, difficulty, resetLevel, setGameState, setLives, setScore, lives, setMultiplier, triggerLightning, spawnShrapnel]);
 
   const draw = useCallback(() => {
     const canvas = canvasRef.current;
@@ -759,18 +1005,13 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     const now = Date.now();
 
     // Helper for blinking logic
-    // Returns true if should be visible
     const getBlinkState = (endTime: number) => {
       const remaining = endTime - now;
       if (remaining > POWERUP_WARNING_MS) return true;
       if (remaining <= 0) return false;
-      
-      // Calculate blink interval: starts at 300ms, drops to 50ms as time expires
-      // The closer to 0, the faster the blink
       let interval = 300;
       if (remaining < 1000) interval = 100;
       if (remaining < 500) interval = 50;
-
       return Math.floor(now / interval) % 2 === 0;
     };
 
@@ -829,7 +1070,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         startX, startY + size
       );
       ctx.bezierCurveTo(
-        startX, startY + (size + topCurveHeight) / 2, 
+        startX + size / 2, startY + (size + topCurveHeight) / 2, 
         startX + size / 2, startY + (size + topCurveHeight) / 2, 
         startX + size / 2, startY + topCurveHeight
       );
@@ -849,14 +1090,10 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     };
 
     const drawLaserIcon = (x: number, y: number, color: string) => {
-        // Pulsing Effect based on time
         const pulse = Math.abs(Math.sin(now / 200)); 
         const outerGlow = 10 + pulse * 10;
-        
         ctx.save();
         ctx.translate(x, y);
-
-        // 1. Outer Target Ring
         ctx.beginPath();
         ctx.arc(0, 0, 10 + pulse * 2, 0, Math.PI * 2);
         ctx.strokeStyle = color;
@@ -864,49 +1101,31 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         ctx.shadowBlur = outerGlow;
         ctx.shadowColor = color;
         ctx.stroke();
-        
-        // 2. Crosshairs (Reticle)
         ctx.beginPath();
-        // Top
-        ctx.moveTo(0, -14 - pulse);
-        ctx.lineTo(0, -6);
-        // Bottom
-        ctx.moveTo(0, 6);
-        ctx.lineTo(0, 14 + pulse);
-        // Left
-        ctx.moveTo(-14 - pulse, 0);
-        ctx.lineTo(-6, 0);
-        // Right
-        ctx.moveTo(6, 0);
-        ctx.lineTo(14 + pulse, 0);
-        
+        ctx.moveTo(0, -14 - pulse); ctx.lineTo(0, -6);
+        ctx.moveTo(0, 6); ctx.lineTo(0, 14 + pulse);
+        ctx.moveTo(-14 - pulse, 0); ctx.lineTo(-6, 0);
+        ctx.moveTo(6, 0); ctx.lineTo(14 + pulse, 0);
         ctx.strokeStyle = color;
         ctx.lineWidth = 2;
         ctx.stroke();
-
-        // 3. Center Beam Core (The "Laser")
         ctx.beginPath();
         ctx.arc(0, 0, 4, 0, Math.PI * 2);
-        ctx.fillStyle = '#ffffff'; // White hot center
+        ctx.fillStyle = '#ffffff'; 
         ctx.shadowBlur = 15;
         ctx.shadowColor = color;
         ctx.fill();
-        
-        // 4. Inner Ring (Spinning or static)
         ctx.beginPath();
         ctx.arc(0, 0, 7, 0, Math.PI * 2);
         ctx.strokeStyle = `rgba(255, 255, 255, 0.5)`;
         ctx.lineWidth = 1;
         ctx.stroke();
-
         ctx.restore();
     };
 
     const drawShieldIcon = (x: number, y: number, radius: number, color: string) => {
         ctx.save();
         ctx.translate(x, y);
-        
-        // Shield Shape
         const r = radius;
         ctx.beginPath();
         ctx.moveTo(-r*0.8, -r*0.8);
@@ -915,86 +1134,100 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         ctx.quadraticCurveTo(r*0.8, r, 0, r*1.3);
         ctx.quadraticCurveTo(-r*0.8, r, -r*0.8, 0);
         ctx.closePath();
-        
         ctx.fillStyle = color;
         ctx.shadowBlur = 8;
         ctx.shadowColor = color;
         ctx.fill();
-        
-        // White cross
         ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
         ctx.shadowBlur = 0;
-        // Vertical
         ctx.fillRect(-2, -r*0.5, 4, r*1.2);
-        // Horizontal
         ctx.fillRect(-r*0.6, -2, r*1.2, 4);
-        
         ctx.restore();
     };
 
     const drawMultiBallIcon = (x: number, y: number, radius: number, color: string) => {
         ctx.save();
         ctx.translate(x, y);
-        
         const ballR = radius * 0.35;
-        // Triangle formation
         const offsets = [
             {x: 0, y: -radius * 0.4},
             {x: -radius * 0.5, y: radius * 0.4},
             {x: radius * 0.5, y: radius * 0.4}
         ];
-        
         ctx.fillStyle = color;
         ctx.shadowBlur = 5;
         ctx.shadowColor = color;
-        
         offsets.forEach(off => {
             ctx.beginPath();
             ctx.arc(off.x, off.y, ballR, 0, Math.PI * 2);
             ctx.fill();
-            
-            // Tiny Highlight for depth
             ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
             ctx.beginPath();
             ctx.arc(off.x - ballR*0.3, off.y - ballR*0.3, ballR*0.3, 0, Math.PI * 2);
             ctx.fill();
-            ctx.fillStyle = color; // reset
+            ctx.fillStyle = color; 
         });
-        
         ctx.restore();
     };
 
     const drawEnlargeIcon = (x: number, y: number, radius: number, color: string) => {
         ctx.save();
         ctx.translate(x, y);
-        
         ctx.strokeStyle = color;
         ctx.lineWidth = 3;
         ctx.lineCap = 'round';
         ctx.lineJoin = 'round';
         ctx.shadowBlur = 8;
         ctx.shadowColor = color;
-        
         const w = radius * 0.8;
-        
-        // Left Arrow <
         ctx.beginPath();
-        ctx.moveTo(w*0.2, 0);
-        ctx.lineTo(-w, 0);
-        ctx.lineTo(-w*0.5, -w*0.5);
-        ctx.moveTo(-w, 0);
-        ctx.lineTo(-w*0.5, w*0.5);
+        ctx.moveTo(w*0.2, 0); ctx.lineTo(-w, 0); ctx.lineTo(-w*0.5, -w*0.5);
+        ctx.moveTo(-w, 0); ctx.lineTo(-w*0.5, w*0.5);
         ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(-w*0.2, 0); ctx.lineTo(w, 0); ctx.lineTo(w*0.5, -w*0.5);
+        ctx.moveTo(w, 0); ctx.lineTo(w*0.5, w*0.5);
+        ctx.stroke();
+        ctx.restore();
+    };
 
-        // Right Arrow >
+    const drawLightningIcon = (x: number, y: number, radius: number, color: string) => {
+        ctx.save();
+        ctx.translate(x, y);
         ctx.beginPath();
-        ctx.moveTo(-w*0.2, 0);
-        ctx.lineTo(w, 0);
-        ctx.lineTo(w*0.5, -w*0.5);
-        ctx.moveTo(w, 0);
-        ctx.lineTo(w*0.5, w*0.5);
-        ctx.stroke();
-        
+        ctx.moveTo(-radius * 0.3, -radius * 0.8);
+        ctx.lineTo(radius * 0.5, -radius * 0.2);
+        ctx.lineTo(-radius * 0.1, -radius * 0.2);
+        ctx.lineTo(radius * 0.3, radius * 0.8);
+        ctx.lineTo(-radius * 0.5, radius * 0.2);
+        ctx.lineTo(radius * 0.1, radius * 0.2);
+        ctx.closePath();
+        ctx.fillStyle = color;
+        ctx.shadowBlur = 8;
+        ctx.shadowColor = color;
+        ctx.fill();
+        ctx.restore();
+    };
+
+    const drawClusterIcon = (x: number, y: number, radius: number, color: string) => {
+        ctx.save();
+        ctx.translate(x, y);
+        // Main core
+        ctx.beginPath();
+        ctx.arc(0, 0, radius * 0.5, 0, Math.PI * 2);
+        ctx.fillStyle = color;
+        ctx.shadowBlur = 6;
+        ctx.shadowColor = color;
+        ctx.fill();
+        // Orbiting dots
+        for(let i=0; i<3; i++) {
+            const angle = (now / 200) + (i * (Math.PI * 2 / 3));
+            const ox = Math.cos(angle) * radius * 0.8;
+            const oy = Math.sin(angle) * radius * 0.8;
+            ctx.beginPath();
+            ctx.arc(ox, oy, radius * 0.2, 0, Math.PI * 2);
+            ctx.fill();
+        }
         ctx.restore();
     };
 
@@ -1010,7 +1243,6 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
 
     // Shield
     if (shieldActiveRef.current) {
-      // Check blink for expiring shield
       if (getBlinkState(powerUpStateRef.current.shieldEndTime)) {
         ctx.beginPath();
         ctx.moveTo(0, CANVAS_HEIGHT - 2);
@@ -1028,21 +1260,36 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     if (laserBeamRef.current) {
        ctx.save();
        ctx.globalAlpha = laserBeamRef.current.alpha;
-       
-       // Outer glow (Red)
        ctx.fillStyle = COLORS.laserBeam;
        ctx.shadowBlur = 30;
        ctx.shadowColor = COLORS.laserBeam;
        ctx.fillRect(laserBeamRef.current.x - 15, 0, 30, CANVAS_HEIGHT);
-       
-       // Inner core (White hot)
        ctx.fillStyle = '#ffffff'; 
        ctx.shadowBlur = 10;
        ctx.shadowColor = '#ffffff';
        ctx.fillRect(laserBeamRef.current.x - 4, 0, 8, CANVAS_HEIGHT);
-       
        ctx.restore();
     }
+
+    // Lightning Arcs
+    lightningArcsRef.current.forEach(arc => {
+        ctx.save();
+        ctx.globalAlpha = arc.life;
+        ctx.beginPath();
+        ctx.moveTo(arc.x1, arc.y1);
+        // Jagged line
+        const midX = (arc.x1 + arc.x2) / 2 + (Math.random() - 0.5) * 30;
+        const midY = (arc.y1 + arc.y2) / 2 + (Math.random() - 0.5) * 30;
+        ctx.lineTo(midX, midY);
+        ctx.lineTo(arc.x2, arc.y2);
+        
+        ctx.strokeStyle = '#facc15';
+        ctx.lineWidth = 3;
+        ctx.shadowBlur = 10;
+        ctx.shadowColor = '#facc15';
+        ctx.stroke();
+        ctx.restore();
+    });
 
     // Bricks
     bricksRef.current.forEach(b => {
@@ -1053,6 +1300,14 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         ctx.fill();
         ctx.closePath();
       }
+    });
+
+    // Shrapnel
+    shrapnelsRef.current.forEach(s => {
+        ctx.beginPath();
+        ctx.arc(s.x, s.y, s.radius, 0, Math.PI * 2);
+        ctx.fillStyle = s.color;
+        ctx.fill();
     });
 
     // PowerUps
@@ -1070,6 +1325,10 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
          drawMultiBallIcon(p.x, p.y, r, p.color);
        } else if (p.type === PowerUpType.ENLARGE) {
          drawEnlargeIcon(p.x, p.y, r, p.color);
+       } else if (p.type === PowerUpType.LIGHTNING) {
+         drawLightningIcon(p.x, p.y, r, p.color);
+       } else if (p.type === PowerUpType.CLUSTER) {
+         drawClusterIcon(p.x, p.y, r, p.color);
        } else {
          // Fallback
          ctx.beginPath();
@@ -1078,13 +1337,11 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
          ctx.shadowBlur = 5;
          ctx.shadowColor = p.color;
          ctx.fill();
-         
          ctx.fillStyle = 'white';
          ctx.font = '10px Arial';
          ctx.textAlign = 'center';
          ctx.textBaseline = 'middle';
          ctx.fillText(p.type[0], p.x, p.y);
-         ctx.shadowBlur = 0;
          ctx.closePath();
        }
     });
@@ -1093,22 +1350,29 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     if (powerUpStateRef.current.laserFireTime > now) {
          const timeLeft = powerUpStateRef.current.laserFireTime - now;
          const totalDuration = LASER_DELAY;
-         const progress = 1 - (timeLeft / totalDuration); // 0 to 1
-         
-         // Visuals: Growing red orb on paddle
+         const progress = 1 - (timeLeft / totalDuration); 
          const centerX = paddleRef.current.x + paddleRef.current.width / 2;
          const centerY = paddleRef.current.y;
-         
          const radius = progress * 15;
          ctx.beginPath();
          ctx.arc(centerX, centerY, radius, 0, Math.PI * 2);
-         // Flickering effect
          ctx.fillStyle = `rgba(239, 68, 68, ${0.6 + Math.random() * 0.4})`;
          ctx.shadowBlur = 15 * progress;
          ctx.shadowColor = '#ef4444';
          ctx.fill();
          ctx.closePath();
     }
+
+    // Paddle Ghosts (Dash Trail)
+    paddleGhostsRef.current.forEach(g => {
+        ctx.save();
+        ctx.globalAlpha = g.life * 0.4;
+        ctx.fillStyle = COLORS.paddle;
+        ctx.beginPath();
+        ctx.roundRect(g.x, g.y, g.width, g.height, 6);
+        ctx.fill();
+        ctx.restore();
+    });
 
     // Paddle Drawing
     ctx.save();
@@ -1121,19 +1385,12 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
       paddleColor = COLORS.paddleFlash;
       paddleRef.current.flashTimer--;
     } else {
-      // Calculate blink for expiration of any paddle affecting powerup
       const stickyActive = now < powerUpStateRef.current.stickyEndTime;
       const enlargeActive = paddleRef.current.isEnlarged;
-      
       let shouldBlink = false;
-      // If sticky is active, check its warning timer
       if (stickyActive && !getBlinkState(powerUpStateRef.current.stickyEndTime)) shouldBlink = true;
-      // If enlarge is active (and not overridden by sticky or is expiring), check its timer
       if (enlargeActive && !getBlinkState(powerUpStateRef.current.enlargeEndTime)) shouldBlink = true;
-
-      if (shouldBlink) {
-         paddleColor = '#ffffff';
-      }
+      if (shouldBlink) paddleColor = '#ffffff';
     }
     
     ctx.shadowBlur = 15;
@@ -1142,27 +1399,47 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     ctx.fill();
     ctx.shadowBlur = 0;
     
-    // Overlay Impacts (clipped to paddle shape)
+    // Dash Ready Indicator
+    if (now >= paddleRef.current.dashCooldown) {
+        ctx.fillStyle = '#4ade80'; // Green ready light
+        ctx.fillRect(paddleRef.current.x + paddleRef.current.width/2 - 2, paddleRef.current.y + paddleRef.current.height - 4, 4, 2);
+        ctx.shadowBlur = 5;
+        ctx.shadowColor = '#4ade80';
+        ctx.fillRect(paddleRef.current.x + paddleRef.current.width/2 - 10, paddleRef.current.y + 22, 20, 3);
+        ctx.shadowBlur = 0;
+    }
+
+    // Overlay Impacts
     ctx.clip();
-    
     paddleImpactsRef.current.forEach(impact => {
         const cx = paddleRef.current.x + impact.x;
         const cy = paddleRef.current.y;
         const radius = 80 * (1 - impact.life);
-        
         const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, radius);
         grad.addColorStop(0, `rgba(255, 255, 255, ${impact.life})`);
         grad.addColorStop(1, `rgba(255, 255, 255, 0)`);
-        
         ctx.fillStyle = grad;
         ctx.fillRect(paddleRef.current.x, paddleRef.current.y, paddleRef.current.width, paddleRef.current.height);
     });
-
     ctx.restore();
 
 
     // Balls
     ballsRef.current.forEach(ball => {
+      // Draw Trail
+      if (ball.trail) {
+        ball.trail.forEach((pos, index) => {
+            const ratio = (index + 1) / ball.trail.length; // 0.1 to 1.0
+            const opacity = ratio * 0.4; // Max 0.4 opacity
+            
+            ctx.beginPath();
+            ctx.arc(pos.x, pos.y, ball.radius * ratio, 0, Math.PI * 2); // Tapering size
+            ctx.fillStyle = `rgba(255, 255, 255, ${opacity})`; 
+            ctx.fill();
+            ctx.closePath();
+        });
+      }
+
       ctx.beginPath();
       ctx.arc(ball.x, ball.y, ball.radius, 0, Math.PI * 2);
       ctx.fillStyle = COLORS.ball;
@@ -1183,7 +1460,6 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
          
          const guideLength = 120;
          
-         // Create gradient for the laser sight
          const gradient = ctx.createLinearGradient(ball.x, ball.y, ball.x + dx * guideLength, ball.y + dy * guideLength);
          gradient.addColorStop(0, 'rgba(255, 255, 255, 0.6)');
          gradient.addColorStop(1, 'rgba(255, 255, 255, 0)');
@@ -1209,6 +1485,15 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
       ctx.fill();
       ctx.globalAlpha = 1.0;
       ctx.closePath();
+    });
+
+    // Floating Score Texts
+    floatingTextsRef.current.forEach(t => {
+      ctx.font = 'bold 16px "Orbitron", sans-serif';
+      ctx.fillStyle = t.color;
+      ctx.globalAlpha = t.life;
+      ctx.fillText(t.text, t.x, t.y);
+      ctx.globalAlpha = 1.0;
     });
 
     // Touch Feedback

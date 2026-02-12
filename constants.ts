@@ -45,7 +45,9 @@ export const POWERUP_COLORS = {
   [PowerUpType.SHIELD]: '#38bdf8', // Sky
   [PowerUpType.LASER]: '#ef4444', // Red
   [PowerUpType.STICKY]: '#4ade80', // Green 400
-  [PowerUpType.HEART]: '#ec4899' // Pink 500
+  [PowerUpType.HEART]: '#ec4899', // Pink 500
+  [PowerUpType.LIGHTNING]: '#facc15', // Yellow
+  [PowerUpType.CLUSTER]: '#f87171' // Red 400
 };
 
 export const DIFFICULTY_SETTINGS = {
@@ -72,4 +74,10 @@ export const SHIELD_DURATION = 10000; // 10s
 export const ENLARGE_DURATION = 10000; // 10s
 export const STICKY_DURATION = 10000; // 10s
 export const LASER_DELAY = 2000; // 2.0s
+export const LIGHTNING_DURATION = 10000; // 10s
+export const CLUSTER_DURATION = 10000; // 10s
 export const POWERUP_WARNING_MS = 3000; // Warning starts 3 seconds before expiry
+
+export const DASH_COOLDOWN_MS = 3000;
+export const DASH_DISTANCE = 100;
+export const DASH_GHOST_DURATION = 0.2; // 200ms visual trail

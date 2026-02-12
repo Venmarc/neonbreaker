@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import GameCanvas from './components/GameCanvas';
 import { GameState, Difficulty } from './types';
 import { Play, RotateCcw, Trophy, Settings, Home, Volume2, VolumeX, ArrowLeft, Heart, Zap, HelpCircle, X } from 'lucide-react';
@@ -20,6 +20,7 @@ const App: React.FC = () => {
   const [gameKey, setGameKey] = useState(0); // Used to force remount for restart
   const [multiplier, setMultiplier] = useState(1);
   const [showHelp, setShowHelp] = useState(false);
+  const [countdown, setCountdown] = useState(3);
   
   // Responsive Scale
   const scale = useGameScale(BASE_WIDTH, BASE_HEIGHT);
@@ -27,6 +28,10 @@ const App: React.FC = () => {
   // Audio State
   const [musicVol, setMusicVolState] = useState(0.3);
   const [sfxVol, setSfxVolState] = useState(0.5);
+  
+  // Store previous volume for unmuting
+  const prevMusicVol = useRef(0.3);
+  const prevSfxVol = useRef(0.5);
 
   useEffect(() => {
     const stored = localStorage.getItem('neonBreakerHighScore');
@@ -34,8 +39,13 @@ const App: React.FC = () => {
       setHighScore(parseInt(stored));
     }
     // Initialize Audio
-    setMusicVolState(getMusicVolume());
-    setSfxVolState(getSfxVolume());
+    const initMusicVol = getMusicVolume();
+    const initSfxVol = getSfxVolume();
+    setMusicVolState(initMusicVol);
+    setSfxVolState(initSfxVol);
+    
+    if (initMusicVol > 0) prevMusicVol.current = initMusicVol;
+    if (initSfxVol > 0) prevSfxVol.current = initSfxVol;
   }, []);
 
   useEffect(() => {
@@ -52,6 +62,49 @@ const App: React.FC = () => {
     } else if (gameState === GameState.MENU || gameState === GameState.SETTINGS) {
       // Keep music in menu/settings
       startMusic();
+    }
+  }, [gameState]);
+
+  // Auto-Pause on Focus Loss
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.hidden && (gameState === GameState.PLAYING || gameState === GameState.RESUMING)) {
+        setGameState(GameState.PAUSED);
+        setShowHelp(false);
+      }
+    };
+
+    const handleBlur = () => {
+      if (gameState === GameState.PLAYING || gameState === GameState.RESUMING) {
+        setGameState(GameState.PAUSED);
+        setShowHelp(false);
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('blur', handleBlur);
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('blur', handleBlur);
+    };
+  }, [gameState]);
+
+  // Resume Countdown Logic
+  useEffect(() => {
+    if (gameState === GameState.RESUMING) {
+      setCountdown(3);
+      const interval = setInterval(() => {
+        setCountdown((prev) => {
+          if (prev <= 1) {
+            clearInterval(interval);
+            setGameState(GameState.PLAYING);
+            return 3;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+      return () => clearInterval(interval);
     }
   }, [gameState]);
 
@@ -80,11 +133,11 @@ const App: React.FC = () => {
   };
 
   const togglePause = () => {
-    if (gameState === GameState.PLAYING) {
+    if (gameState === GameState.PLAYING || gameState === GameState.RESUMING) {
       setGameState(GameState.PAUSED);
       setShowHelp(false); // Reset help state
     } else if (gameState === GameState.PAUSED) {
-      setGameState(GameState.PLAYING);
+      setGameState(GameState.RESUMING);
     } else if (gameState === GameState.MENU) {
       setGameState(GameState.SETTINGS);
       setShowHelp(false);
@@ -97,12 +150,36 @@ const App: React.FC = () => {
     const val = parseFloat(e.target.value);
     setMusicVolState(val);
     setMusicVolume(val);
+    if (val > 0) prevMusicVol.current = val;
   };
 
   const handleSfxChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const val = parseFloat(e.target.value);
     setSfxVolState(val);
     setSfxVolume(val);
+    if (val > 0) prevSfxVol.current = val;
+  };
+  
+  const toggleMusicMute = () => {
+    if (musicVol > 0) {
+      setMusicVolState(0);
+      setMusicVolume(0);
+    } else {
+      const restore = prevMusicVol.current > 0 ? prevMusicVol.current : 0.3;
+      setMusicVolState(restore);
+      setMusicVolume(restore);
+    }
+  };
+
+  const toggleSfxMute = () => {
+    if (sfxVol > 0) {
+      setSfxVolState(0);
+      setSfxVolume(0);
+    } else {
+      const restore = prevSfxVol.current > 0 ? prevSfxVol.current : 0.5;
+      setSfxVolState(restore);
+      setSfxVolume(restore);
+    }
   };
 
   const DifficultyButton = ({ level, current }: { level: Difficulty, current: Difficulty }) => (
@@ -128,7 +205,7 @@ const App: React.FC = () => {
     </div>
   );
 
-  const showHud = gameState === GameState.PLAYING || gameState === GameState.PAUSED;
+  const showHud = gameState === GameState.PLAYING || gameState === GameState.PAUSED || gameState === GameState.RESUMING;
   const isHotStreak = multiplier >= 3.0;
 
   return (
@@ -175,10 +252,10 @@ const App: React.FC = () => {
               
               <div className="flex flex-col items-center">
                 <span className="text-slate-400 text-[10px] font-bold uppercase tracking-widest mb-1">Status</span>
-                 {gameState === GameState.PLAYING && (
+                 {(gameState === GameState.PLAYING || gameState === GameState.RESUMING) && (
                     <span className="text-green-400 text-xs font-bold flex items-center gap-2">
-                      <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
-                      {difficulty}
+                      <span className={`w-2 h-2 rounded-full bg-green-500 ${gameState === GameState.RESUMING ? 'animate-ping' : 'animate-pulse'}`}></span>
+                      {gameState === GameState.RESUMING ? 'READY' : difficulty}
                     </span>
                  )}
                  {gameState === GameState.PAUSED && <span className="text-yellow-500 text-xs font-bold animate-pulse">PAUSED</span>}
@@ -216,6 +293,15 @@ const App: React.FC = () => {
                 difficulty={difficulty}
                 setMultiplier={setMultiplier}
             />
+
+            {/* Resume Countdown Overlay */}
+            {gameState === GameState.RESUMING && (
+              <div className="absolute inset-0 flex items-center justify-center z-40 pointer-events-none">
+                <div className="text-9xl font-black text-white drop-shadow-[0_0_30px_rgba(34,211,238,0.8)] animate-pulse font-[Orbitron]">
+                  {countdown}
+                </div>
+              </div>
+            )}
 
             {/* Menu Overlay */}
             {gameState === GameState.MENU && (
@@ -292,14 +378,14 @@ const App: React.FC = () => {
                                 <section>
                                     <h4 className="text-xs font-bold text-pink-400 mb-2 uppercase tracking-wider">Power-Ups</h4>
                                     <div className="grid grid-cols-1 gap-2">
-                                        <PowerUpInfo color="#22c55e" name="Enlarge" desc="Expands paddle width" />
-                                        <PowerUpInfo color="#fbbf24" name="Multiball" desc="Spawns extra balls" />
-                                        <PowerUpInfo color="#ef4444" name="Laser" desc="Shoot beams at bricks" />
-                                        <PowerUpInfo color="#facc15" name="Lightning" desc="Chain brick destruction" />
-                                        <PowerUpInfo color="#f87171" name="Cluster" desc="Explosive shrapnel hit" />
-                                        <PowerUpInfo color="#38bdf8" name="Shield" desc="Saves ball from death" />
-                                        <PowerUpInfo color="#4ade80" name="Sticky" desc="Catch and aim ball" />
-                                        <PowerUpInfo color="#ec4899" name="Heart" desc="+1 Life (Mercy Drop)" />
+                                        <PowerUpInfo color="#22c55e" name="Enlarge" desc="Expands paddle width (10s)" />
+                                        <PowerUpInfo color="#fbbf24" name="Multiball" desc="Spawns extra balls (Instant)" />
+                                        <PowerUpInfo color="#ef4444" name="Laser" desc="Fires massive beam (2s Charge)" />
+                                        <PowerUpInfo color="#facc15" name="Lightning" desc="Chain brick destruction (5s)" />
+                                        <PowerUpInfo color="#f87171" name="Cluster" desc="Explosive shrapnel hits (5s)" />
+                                        <PowerUpInfo color="#38bdf8" name="Shield" desc="Saves ball from death (10s)" />
+                                        <PowerUpInfo color="#4ade80" name="Sticky" desc="Catch and aim ball (10s)" />
+                                        <PowerUpInfo color="#ec4899" name="Heart" desc="+1 Life (Instant)" />
                                     </div>
                                 </section>
                             </div>
@@ -318,7 +404,13 @@ const App: React.FC = () => {
                                         <span>{Math.round(musicVol * 100)}%</span>
                                     </div>
                                     <div className="flex items-center gap-2">
-                                        {musicVol > 0 ? <Volume2 className="w-4 h-4 text-cyan-400" /> : <VolumeX className="w-4 h-4 text-slate-600" />}
+                                        <button 
+                                          onClick={toggleMusicMute} 
+                                          className="focus:outline-none hover:opacity-80 transition-opacity"
+                                          title={musicVol > 0 ? "Mute Music" : "Unmute Music"}
+                                        >
+                                            {musicVol > 0 ? <Volume2 className="w-4 h-4 text-cyan-400" /> : <VolumeX className="w-4 h-4 text-slate-600" />}
+                                        </button>
                                         <input 
                                             type="range" 
                                             min="0" 
@@ -337,7 +429,13 @@ const App: React.FC = () => {
                                         <span>{Math.round(sfxVol * 100)}%</span>
                                     </div>
                                     <div className="flex items-center gap-2">
-                                        {sfxVol > 0 ? <Volume2 className="w-4 h-4 text-pink-400" /> : <VolumeX className="w-4 h-4 text-slate-600" />}
+                                        <button 
+                                          onClick={toggleSfxMute} 
+                                          className="focus:outline-none hover:opacity-80 transition-opacity"
+                                          title={sfxVol > 0 ? "Mute SFX" : "Unmute SFX"}
+                                        >
+                                            {sfxVol > 0 ? <Volume2 className="w-4 h-4 text-pink-400" /> : <VolumeX className="w-4 h-4 text-slate-600" />}
+                                        </button>
                                         <input 
                                             type="range" 
                                             min="0" 

@@ -74,8 +74,8 @@ export const SHIELD_DURATION = 10000; // 10s
 export const ENLARGE_DURATION = 10000; // 10s
 export const STICKY_DURATION = 10000; // 10s
 export const LASER_DELAY = 2000; // 2.0s
-export const LIGHTNING_DURATION = 10000; // 10s
-export const CLUSTER_DURATION = 10000; // 10s
+export const LIGHTNING_DURATION = 5000; // 5s
+export const CLUSTER_DURATION = 5000; // 5s
 export const POWERUP_WARNING_MS = 3000; // Warning starts 3 seconds before expiry
 
 export const DASH_COOLDOWN_MS = 3000;

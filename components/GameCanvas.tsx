@@ -517,26 +517,35 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
 
     // --- NORMAL DROP LOGIC ---
     if (!spawnedPowerUp && Math.random() < POWERUP_CHANCE) {
-       let types = Object.values(PowerUpType);
+       // Weighted Drop System
+       const r = Math.random() * 100;
+       let type: PowerUpType;
        
-       // Filter out hearts from random drops
-       types = types.filter(t => t !== PowerUpType.HEART);
-
-       if (types.length > 0) {
-           const type = types[Math.floor(Math.random() * types.length)];
-           
-           powerUpsRef.current.push({
-             id: Math.random(),
-             x: x,
-             y: y,
-             width: 20,
-             height: 20,
-             dy: POWERUP_SPEED,
-             type: type,
-             active: true,
-             color: POWERUP_COLORS[type]
-           });
+       if (r < 60) {
+           // Common (60%): LASER, STICKY, ENLARGE
+           const pool = [PowerUpType.LASER, PowerUpType.STICKY, PowerUpType.ENLARGE];
+           type = pool[Math.floor(Math.random() * pool.length)];
+       } else if (r < 90) {
+           // Uncommon (30%): MULTIBALL, SHIELD
+           const pool = [PowerUpType.MULTIBALL, PowerUpType.SHIELD];
+           type = pool[Math.floor(Math.random() * pool.length)];
+       } else {
+           // Rare (10%): CLUSTER, LIGHTNING
+           const pool = [PowerUpType.CLUSTER, PowerUpType.LIGHTNING];
+           type = pool[Math.floor(Math.random() * pool.length)];
        }
+
+       powerUpsRef.current.push({
+         id: Math.random(),
+         x: x,
+         y: y,
+         width: 20,
+         height: 20,
+         dy: POWERUP_SPEED,
+         type: type,
+         active: true,
+         color: POWERUP_COLORS[type]
+       });
     }
   };
 
@@ -566,10 +575,6 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
             addFloatingText(b.x + b.width / 2, b.y, `+${b.value}`, '#ffffff');
             particlesRef.current.push(...createParticles(b.x + b.width / 2, b.y + b.height / 2, b.color));
             playSound('brick');
-            
-            // Check for Chain Lightning / Cluster even on laser hit? 
-            // The prompt says "When the ball ... hits". But let's apply it here for fun consistency if user asks later. 
-            // For now, strictly follow prompt: "When the ball ... hits". So Laser is just basic destroy.
             
             attemptPowerUpDrop(b.x + b.width / 2, b.y + b.height / 2);
          }
@@ -1312,6 +1317,29 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
 
     // PowerUps
     powerUpsRef.current.forEach(p => {
+       // Rare Glow Logic for Cluster and Lightning
+       if (p.type === PowerUpType.CLUSTER || p.type === PowerUpType.LIGHTNING) {
+           ctx.save();
+           ctx.translate(p.x, p.y);
+           // Pulsing effect
+           const pulse = Math.sin(now / 100) * 2;
+           ctx.beginPath();
+           ctx.arc(0, 0, 16 + pulse, 0, Math.PI * 2);
+           ctx.fillStyle = 'rgba(255, 215, 0, 0.3)'; // Gold
+           ctx.shadowBlur = 10;
+           ctx.shadowColor = 'gold';
+           ctx.fill();
+           
+           // Inner ring
+           ctx.beginPath();
+           ctx.arc(0, 0, 12 + pulse, 0, Math.PI * 2);
+           ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
+           ctx.lineWidth = 1;
+           ctx.stroke();
+           
+           ctx.restore();
+       }
+
        const r = 10;
        if (p.type === PowerUpType.STICKY) {
          drawSpikyBall(p.x, p.y, r, p.color);

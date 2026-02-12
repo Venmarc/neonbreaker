@@ -4,7 +4,8 @@ export enum GameState {
   PAUSED = 'PAUSED',
   GAME_OVER = 'GAME_OVER',
   VICTORY = 'VICTORY',
-  SETTINGS = 'SETTINGS'
+  SETTINGS = 'SETTINGS',
+  RESUMING = 'RESUMING'
 }
 
 export enum Difficulty {

@@ -81,3 +81,7 @@ export const POWERUP_WARNING_MS = 3000; // Warning starts 3 seconds before expir
 export const DASH_COOLDOWN_MS = 3000;
 export const DASH_DISTANCE = 100;
 export const DASH_GHOST_DURATION = 0.2; // 200ms visual trail
+
+// Momentum Pierce Mechanics
+export const PIERCE_THRESHOLD_FACTOR = 1.5; // Speed must be > 1.5x base speed to pierce
+export const PIERCE_DRAG = 0.85; // Speed multiplier after piercing (15% slow down)

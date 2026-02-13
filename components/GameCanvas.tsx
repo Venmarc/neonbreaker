@@ -5,7 +5,8 @@ import {
   BRICK_WIDTH, BRICK_HEIGHT, BRICK_PADDING, BRICK_OFFSET_TOP, BRICK_OFFSET_LEFT,
   DIFFICULTY_SETTINGS, POWERUP_CHANCE, POWERUP_COLORS, POWERUP_SPEED,
   ENLARGE_DURATION, SHIELD_DURATION, LASER_DELAY, POWERUP_WARNING_MS, STICKY_DURATION,
-  DASH_COOLDOWN_MS, DASH_DISTANCE, LIGHTNING_DURATION, CLUSTER_DURATION
+  DASH_COOLDOWN_MS, DASH_DISTANCE, LIGHTNING_DURATION, CLUSTER_DURATION,
+  PIERCE_THRESHOLD_FACTOR, PIERCE_DRAG
 } from '../constants';
 import { GameState, Difficulty, Ball, Paddle, Brick, Particle, PowerUp, PowerUpType, LightningArc, Shrapnel, PaddleGhost } from '../types';
 import { detectCircleRectCollision, createParticles, updateParticles } from '../utils/physics';
@@ -50,6 +51,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
   const lightningArcsRef = useRef<LightningArc[]>([]);
   const shrapnelsRef = useRef<Shrapnel[]>([]);
   const paddleGhostsRef = useRef<PaddleGhost[]>([]);
+  const shakeRef = useRef<number>(0); // Screen shake magnitude
   
   const paddleRef = useRef<Paddle>({
     x: (CANVAS_WIDTH - PADDLE_WIDTH) / 2,
@@ -108,6 +110,23 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
 
   const keysPressed = useRef<{ [key: string]: boolean }>({});
 
+  // --- HELPER: Physics Calculations ---
+  
+  // Consistent launch angle calculation
+  const getLaunchVector = useCallback((offset: number, halfPaddleWidth: number, speed: number) => {
+    // Normalize offset (-1 to 1)
+    const hitPoint = offset / halfPaddleWidth;
+    // Clamp to ensure we don't exceed max angle
+    const clampedHitPoint = Math.max(-1, Math.min(1, hitPoint));
+    // Max angle 60 degrees (PI/3)
+    const angle = clampedHitPoint * (Math.PI / 3); 
+    
+    return {
+        dx: speed * Math.sin(angle),
+        dy: -speed * Math.cos(angle)
+    };
+  }, []);
+
   // Initialize Bricks
   const initBricks = useCallback(() => {
     // Reset critical mode on new level
@@ -149,6 +168,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     paddleGhostsRef.current = [];
     lightningArcsRef.current = [];
     shrapnelsRef.current = [];
+    shakeRef.current = 0;
     
     powerUpStateRef.current = {
       enlargeEndTime: 0,
@@ -171,6 +191,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
       dy: dy ?? 0,
       speed: settings.ballSpeed,
       active: isActive,
+      spin: 0, // Initialize with no spin
       stuckOffset: 0, // Initialize centered
       trail: [] // Initialize empty trail
     };
@@ -205,6 +226,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         lightningArcsRef.current = [];
         shrapnelsRef.current = [];
         paddleGhostsRef.current = [];
+        shakeRef.current = 0;
         streakRef.current = 0;
         setMultiplier(1);
         
@@ -227,33 +249,28 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
       inactiveBalls.forEach(ball => {
          ball.active = true;
          ball.trail = []; // Reset trail on launch
-         // Use offset to calculate angle, similar to paddle hit logic
+         
          const offset = ball.stuckOffset ?? 0;
-         const hitPoint = offset / (paddleRef.current.width / 2);
-         
-         // Ensure hitPoint is within bounds in case paddle shrunk
-         const clampedHitPoint = Math.max(-1, Math.min(1, hitPoint));
-         const angle = clampedHitPoint * (Math.PI / 3); // Max 60 deg
-         
-         ball.dx = ball.speed * Math.sin(angle);
-         ball.dy = -ball.speed * Math.cos(angle);
+         let { dx, dy } = getLaunchVector(offset, paddleRef.current.width / 2, ball.speed);
 
-         // RULE: Minimum Horizontal Velocity on Launch
-         const MIN_DX = 0.5;
-         if (Math.abs(ball.dx) < MIN_DX) {
-            const dir = ball.dx >= 0 ? 1 : -1;
-            ball.dx = dir * MIN_DX;
-            // Recalculate DY to maintain speed
-            const remainingSpeedSq = Math.max(0, (ball.speed * ball.speed) - (ball.dx * ball.dx));
-            ball.dy = -Math.sqrt(remainingSpeedSq);
+         // Implement "Micro-Drift" to prevent infinite vertical loops
+         // If trajectory is extremely vertical (dx near 0), add a tiny sub-pixel nudge.
+         if (Math.abs(dx) < 0.1) {
+             const drift = (Math.random() * 0.1) - 0.05; // +/- 0.05
+             dx += drift;
          }
+
+         // Normalize velocity to ensure speed is consistent even after drift
+         const currentSpeed = Math.sqrt(dx * dx + dy * dy);
+         ball.dx = (dx / currentSpeed) * ball.speed;
+         ball.dy = (dy / currentSpeed) * ball.speed;
 
          // Add launch particles for visual flair
          particlesRef.current.push(...createParticles(ball.x, ball.y, COLORS.paddle));
       });
       playSound('paddle');
     }
-  }, [gameState, setMultiplier]);
+  }, [gameState, setMultiplier, getLaunchVector]);
 
   const addFloatingText = (x: number, y: number, text: string, color: string = '#ffffff') => {
     floatingTextsRef.current.push({
@@ -370,8 +387,19 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         powerUpStateRef.current.enlargeEndTime = now + ENLARGE_DURATION;
         if (!paddleRef.current.isEnlarged) {
           const oldWidth = paddleRef.current.width;
-          paddleRef.current.width = PADDLE_WIDTH_ENLARGED;
-          paddleRef.current.x -= (PADDLE_WIDTH_ENLARGED - oldWidth) / 2; // Center expansion
+          const newWidth = PADDLE_WIDTH_ENLARGED;
+          const widthDiff = newWidth - oldWidth;
+          
+          // Shift Center
+          paddleRef.current.x -= widthDiff / 2;
+          
+          // Update Width
+          paddleRef.current.width = newWidth;
+
+          // Clamp
+          paddleRef.current.x = Math.max(0, paddleRef.current.x);
+          paddleRef.current.x = Math.min(CANVAS_WIDTH - paddleRef.current.width, paddleRef.current.x);
+
           paddleRef.current.isEnlarged = true;
         }
         addFloatingText(x, y - 20, 'BIG PADDLE', '#22c55e');
@@ -384,6 +412,21 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
              // Spawn 2 new balls per active ball
              const b1 = spawnBall(true, b.x, b.y, b.dx * 0.8 + 1, b.dy);
              const b2 = spawnBall(true, b.x, b.y, b.dx * 0.8 - 1, b.dy);
+             ballsRef.current.push(b1, b2);
+           } else {
+             // Handle stuck balls - spawn new balls stuck as well
+             const offset = b.stuckOffset ?? 0;
+             const padWidth = paddleRef.current.width;
+             
+             // Spawn 2 new stuck balls with offset spread
+             const b1 = spawnBall(false);
+             const b2 = spawnBall(false);
+             
+             // Clamp offsets to stay on paddle
+             const maxOffset = padWidth / 2 - BALL_RADIUS;
+             b1.stuckOffset = Math.max(-maxOffset, Math.min(maxOffset, offset - 20));
+             b2.stuckOffset = Math.max(-maxOffset, Math.min(maxOffset, offset + 20));
+             
              ballsRef.current.push(b1, b2);
            }
         });
@@ -644,7 +687,18 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
 
     // Check Enlarge Expiry
     if (paddleRef.current.isEnlarged && now > powerUpStateRef.current.enlargeEndTime) {
-      paddleRef.current.width = PADDLE_WIDTH * DIFFICULTY_SETTINGS[difficulty].paddleWidthFactor;
+      const oldWidth = paddleRef.current.width;
+      const newWidth = PADDLE_WIDTH * DIFFICULTY_SETTINGS[difficulty].paddleWidthFactor;
+      const widthDiff = newWidth - oldWidth;
+
+      // Center shrink
+      paddleRef.current.x -= widthDiff / 2;
+      paddleRef.current.width = newWidth;
+      
+      // Clamp
+      paddleRef.current.x = Math.max(0, paddleRef.current.x);
+      paddleRef.current.x = Math.min(CANVAS_WIDTH - paddleRef.current.width, paddleRef.current.x);
+
       paddleRef.current.isEnlarged = false;
     }
 
@@ -676,6 +730,9 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     const stuckBalls = ballsRef.current.filter(b => !b.active);
     const isTouchActive = touchRef.current.active;
     
+    // Capture previous position for velocity calculation
+    const prevPaddleX = paddleRef.current.x;
+
     // AIMING LOGIC (Touch or Keyboard)
     if (stuckBalls.length > 0) {
       if (isTouchActive && touchRef.current.zone === 'UPPER') {
@@ -740,6 +797,9 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         }
       }
     }
+    
+    // Calculate paddle velocity for physics
+    const paddleVelocity = paddleRef.current.x - prevPaddleX;
 
     // --- BALL LOGIC ---
     let activeBallsCount = 0;
@@ -763,6 +823,8 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
             ball.stuckOffset = halfPaddle - ball.radius;
         }
         
+        // Reset dynamics while stuck
+        ball.spin = 0;
         ball.trail = [];
 
       } else {
@@ -773,6 +835,12 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         if (ball.trail.length > 8) {
             ball.trail.shift();
         }
+
+        // Apply Magnus Force (Spin)
+        // User requested subtle effect (0.001), tweaked to 0.0015 for balance
+        ball.dx += ball.spin * 0.0015;
+        // Apply Air Resistance to Spin
+        ball.spin *= 0.98;
 
         ball.x += ball.dx;
         ball.y += ball.dy;
@@ -817,6 +885,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
              ball.stuckOffset = ball.x - (paddleRef.current.x + paddleRef.current.width / 2);
              ball.dx = 0;
              ball.dy = 0;
+             ball.spin = 0;
              playSound('paddle');
            } else {
              playSound('paddle');
@@ -829,28 +898,34 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                life: 1.0
              });
 
-             let hitPoint = ball.x - (paddleRef.current.x + paddleRef.current.width / 2);
-             hitPoint = hitPoint / (paddleRef.current.width / 2); // -1 to 1
-             hitPoint += (Math.random() - 0.5) * 0.1; 
+             // Calculate hit point relative to paddle center (-1 to 1)
+             let hitPoint = (ball.x - (paddleRef.current.x + paddleRef.current.width / 2)) / (paddleRef.current.width / 2);
+             
+             // Apply paddle velocity influence to bounce ANGLE
+             hitPoint += paddleVelocity * 0.02;
+             
+             // Apply paddle velocity to SPIN (Magnus Effect)
+             // Increased friction slightly to ensure effect is visible on keyboard
+             ball.spin = paddleVelocity * 0.15;
+             
              hitPoint = Math.max(-1, Math.min(1, hitPoint));
              
-             const angle = hitPoint * (Math.PI / 3); 
+             const angle = hitPoint * (Math.PI / 3); // Max 60 degrees
              const speed = Math.sqrt(ball.dx*ball.dx + ball.dy*ball.dy);
              const newSpeed = Math.min(speed * 1.05, 14); 
              
-             ball.dx = newSpeed * Math.sin(angle);
-             ball.dy = -newSpeed * Math.cos(angle);
+             let newDx = newSpeed * Math.sin(angle);
+             let newDy = -newSpeed * Math.cos(angle); // Always bounce up
 
-             const MIN_DX = 1.0;
-             if (Math.abs(ball.dx) < MIN_DX) {
-                let dir = Math.sign(hitPoint);
-                if (dir === 0) dir = Math.random() > 0.5 ? 1 : -1;
-                ball.dx = dir * MIN_DX;
-                const remainingSpeedSq = Math.max(0, (newSpeed * newSpeed) - (ball.dx * ball.dx));
-                ball.dy = -Math.sqrt(remainingSpeedSq);
+             // Prevent vertical loops using Micro-Drift instead of hard clamp
+             if (Math.abs(newDx) < 0.1) {
+                 newDx += (Math.random() * 0.1) - 0.05;
              }
-             
-             if (ball.dy > 0) ball.dy = -ball.dy;
+
+             // Normalize to ensure exact speed
+             const velocityMagnitude = Math.sqrt(newDx * newDx + newDy * newDy);
+             ball.dx = (newDx / velocityMagnitude) * newSpeed;
+             ball.dy = (newDy / velocityMagnitude) * newSpeed;
            }
         }
 
@@ -860,6 +935,11 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
           if (b.status === 1) {
             const collision = detectCircleRectCollision(ball, b);
             if (collision.hit) {
+              // --- MOMENTUM PIERCE LOGIC ---
+              const currentSpeed = Math.sqrt(ball.dx*ball.dx + ball.dy*ball.dy);
+              const baseSpeed = DIFFICULTY_SETTINGS[difficulty].ballSpeed;
+              const isPierce = currentSpeed > baseSpeed * PIERCE_THRESHOLD_FACTOR;
+
               b.status = 0;
               streakRef.current += 1;
               const currentMultiplier = 1 + (streakRef.current * 0.1);
@@ -867,19 +947,27 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
               const points = Math.floor(b.value * currentMultiplier);
               setScore(prev => prev + points);
               addFloatingText(b.x + b.width / 2, b.y, `+${points}`, '#ffffff');
-
-              playSound('brick');
               particlesRef.current.push(...createParticles(b.x + b.width / 2, b.y + b.height / 2, b.color));
 
-              // Physics Response
-              if (collision.axis === 'x') {
-                const dir = ball.x < (b.x + b.width / 2) ? -1 : 1;
-                ball.x += dir * (collision.overlap || 1);
-                ball.dx = -ball.dx;
+              if (isPierce) {
+                 // Pierce: Do NOT bounce, apply drag, play special FX
+                 playSound('pierce');
+                 ball.dx *= PIERCE_DRAG;
+                 ball.dy *= PIERCE_DRAG;
+                 // Screen shake kick
+                 shakeRef.current = 5;
               } else {
-                const dir = ball.y < (b.y + b.height / 2) ? -1 : 1;
-                ball.y += dir * (collision.overlap || 1);
-                ball.dy = -ball.dy;
+                 // Normal Bounce
+                 playSound('brick');
+                 if (collision.axis === 'x') {
+                    const dir = ball.x < (b.x + b.width / 2) ? -1 : 1;
+                    ball.x += dir * (collision.overlap || 1);
+                    ball.dx = -ball.dx;
+                 } else {
+                    const dir = ball.y < (b.y + b.height / 2) ? -1 : 1;
+                    ball.y += dir * (collision.overlap || 1);
+                    ball.dy = -ball.dy;
+                 }
               }
 
               // --- SPECIAL POWERUP EFFECTS ---
@@ -999,7 +1087,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
        setGameState(GameState.VICTORY);
     }
 
-  }, [gameState, difficulty, resetLevel, setGameState, setLives, setScore, lives, setMultiplier, triggerLightning, spawnShrapnel]);
+  }, [gameState, difficulty, resetLevel, setGameState, setLives, setScore, lives, setMultiplier, triggerLightning, spawnShrapnel, getLaunchVector]);
 
   const draw = useCallback(() => {
     const canvas = canvasRef.current;
@@ -1008,6 +1096,22 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     if (!ctx) return;
 
     const now = Date.now();
+    
+    // 1. CLEAR CANVAS
+    ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+    
+    // 2. APPLY SCREEN SHAKE
+    ctx.save();
+    if (shakeRef.current > 0) {
+        const magnitude = shakeRef.current;
+        const shakeX = (Math.random() - 0.5) * magnitude;
+        const shakeY = (Math.random() - 0.5) * magnitude;
+        ctx.translate(shakeX, shakeY);
+        
+        // Decay shake
+        shakeRef.current *= 0.9;
+        if (shakeRef.current < 0.5) shakeRef.current = 0;
+    }
 
     // Helper for blinking logic
     const getBlinkState = (endTime: number) => {
@@ -1236,9 +1340,6 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         ctx.restore();
     };
 
-    // Clear Screen
-    ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
-
     // Background
     const gradient = ctx.createLinearGradient(0, 0, 0, CANVAS_HEIGHT);
     gradient.addColorStop(0, '#0f172a');
@@ -1460,9 +1561,20 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
             const ratio = (index + 1) / ball.trail.length; // 0.1 to 1.0
             const opacity = ratio * 0.4; // Max 0.4 opacity
             
+            // Visual Spin Indicator
+            let fillStyle = `rgba(255, 255, 255, ${opacity})`;
+            
+            // Use absolute spin to determine intensity
+            // Keyboard max ~1.2, Touch max ~6.0
+            if (Math.abs(ball.spin) > 3.0) {
+                 fillStyle = `rgba(236, 72, 153, ${opacity})`; // Pink for high spin
+            } else if (Math.abs(ball.spin) > 0.5) {
+                 fillStyle = `rgba(34, 211, 238, ${opacity})`; // Cyan for medium spin
+            }
+
             ctx.beginPath();
-            ctx.arc(pos.x, pos.y, ball.radius * ratio, 0, Math.PI * 2); // Tapering size
-            ctx.fillStyle = `rgba(255, 255, 255, ${opacity})`; 
+            ctx.arc(pos.x, pos.y, ball.radius * ratio, 0, Math.PI * 2); 
+            ctx.fillStyle = fillStyle;
             ctx.fill();
             ctx.closePath();
         });
@@ -1480,21 +1592,16 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
       // Draw guide for inactive balls
       if (!ball.active) {
          const offset = ball.stuckOffset ?? 0;
-         const hitPoint = offset / (paddleRef.current.width / 2);
-         const clampedHitPoint = Math.max(-1, Math.min(1, hitPoint));
-         const angle = clampedHitPoint * (Math.PI / 3);
-         const dx = Math.sin(angle);
-         const dy = -Math.cos(angle);
+         // Use the shared helper function for drawing the guide line
+         const { dx, dy } = getLaunchVector(offset, paddleRef.current.width / 2, 120); // 120px guide length
          
-         const guideLength = 120;
-         
-         const gradient = ctx.createLinearGradient(ball.x, ball.y, ball.x + dx * guideLength, ball.y + dy * guideLength);
+         const gradient = ctx.createLinearGradient(ball.x, ball.y, ball.x + dx, ball.y + dy);
          gradient.addColorStop(0, 'rgba(255, 255, 255, 0.6)');
          gradient.addColorStop(1, 'rgba(255, 255, 255, 0)');
 
          ctx.beginPath();
          ctx.moveTo(ball.x, ball.y);
-         ctx.lineTo(ball.x + dx * guideLength, ball.y + dy * guideLength);
+         ctx.lineTo(ball.x + dx, ball.y + dy);
          ctx.strokeStyle = gradient;
          ctx.lineWidth = 2;
          ctx.setLineDash([4, 4]);
@@ -1535,8 +1642,11 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         ctx.stroke();
         ctx.closePath();
     }
+    
+    // 3. RESTORE CONTEXT (Undo Shake)
+    ctx.restore();
 
-  }, []);
+  }, [getLaunchVector]); // Added dependency
 
   const tick = useCallback(() => {
     update();

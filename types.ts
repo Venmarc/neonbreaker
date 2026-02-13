@@ -44,6 +44,7 @@ export interface Ball {
   dy: number;
   speed: number;
   active: boolean;
+  spin: number; // Magnus effect spin value
   stuckOffset?: number; // Optional offset from paddle center when stuck
   trail: Position[]; // History of positions for visual trail
 }

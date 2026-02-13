@@ -107,7 +107,7 @@ export const stopMusic = () => {
 
 // --- SFX ---
 
-export const playSound = (type: 'paddle' | 'brick' | 'wall' | 'powerup' | 'shoot' | 'gameover' | 'victory' | 'start') => {
+export const playSound = (type: 'paddle' | 'brick' | 'wall' | 'powerup' | 'shoot' | 'gameover' | 'victory' | 'start' | 'pierce') => {
   if (sfxVolume <= 0.01) return; // Muted
 
   const ctx = getAudioCtx();
@@ -154,6 +154,27 @@ export const playSound = (type: 'paddle' | 'brick' | 'wall' | 'powerup' | 'shoot
       gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.15);
       osc.start(now);
       osc.stop(now + 0.15);
+      break;
+
+    case 'pierce':
+      // Heavy impact: Square wave with rapid filter envelope
+      osc.type = 'square';
+      osc.frequency.setValueAtTime(100, now); // Low punch
+      osc.frequency.exponentialRampToValueAtTime(40, now + 0.2);
+      
+      const pFilter = ctx.createBiquadFilter();
+      pFilter.type = 'lowpass';
+      pFilter.frequency.setValueAtTime(400, now);
+      pFilter.frequency.linearRampToValueAtTime(50, now + 0.2);
+      
+      osc.disconnect();
+      osc.connect(pFilter);
+      pFilter.connect(gainNode);
+
+      gainNode.gain.setValueAtTime(0.5 * vol, now);
+      gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.2);
+      osc.start(now);
+      osc.stop(now + 0.2);
       break;
 
     case 'powerup':

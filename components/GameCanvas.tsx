@@ -1,16 +1,16 @@
 import React, { useRef, useEffect, useCallback } from 'react';
 import { 
   CANVAS_WIDTH, CANVAS_HEIGHT, PADDLE_WIDTH, PADDLE_WIDTH_ENLARGED, PADDLE_HEIGHT, PADDLE_OFFSET_BOTTOM, 
-  BALL_RADIUS, COLORS, BRICK_ROW_COUNT, BRICK_COLUMN_COUNT, 
-  BRICK_WIDTH, BRICK_HEIGHT, BRICK_PADDING, BRICK_OFFSET_TOP, BRICK_OFFSET_LEFT,
+  BALL_RADIUS, COLORS, BRICK_PADDING, BRICK_OFFSET_TOP, BRICK_OFFSET_LEFT,
   DIFFICULTY_SETTINGS, POWERUP_CHANCE, POWERUP_COLORS, POWERUP_SPEED,
   ENLARGE_DURATION, SHIELD_DURATION, LASER_DELAY, POWERUP_WARNING_MS, STICKY_DURATION,
   DASH_COOLDOWN_MS, DASH_DISTANCE, LIGHTNING_DURATION, CLUSTER_DURATION,
-  PIERCE_THRESHOLD_FACTOR, PIERCE_DRAG
+  PIERCE_THRESHOLD_FACTOR, PIERCE_DRAG, BRICK_TYPE_COLORS, BRICK_HEIGHT
 } from '../constants';
-import { GameState, Difficulty, Ball, Paddle, Brick, Particle, PowerUp, PowerUpType, LightningArc, Shrapnel, PaddleGhost } from '../types';
+import { GameState, Difficulty, Ball, Paddle, Brick, Particle, PowerUp, PowerUpType, LightningArc, Shrapnel, PaddleGhost, CampaignMode, BrickType } from '../types';
 import { detectCircleRectCollision, createParticles, updateParticles } from '../utils/physics';
 import { playSound } from '../utils/audio';
+import { ARCADE_LEVELS, ENDLESS_STAGES } from '../data/levels';
 
 interface FloatingText {
   id: number;
@@ -31,10 +31,14 @@ interface GameCanvasProps {
   setLives: (lives: number | ((prev: number) => number)) => void;
   difficulty: Difficulty;
   setMultiplier: (multiplier: number) => void;
+  levelIndex: number;
+  campaignMode: CampaignMode;
+  difficultyMultiplier: number;
+  onLevelComplete: () => void;
 }
 
 const GameCanvas: React.FC<GameCanvasProps> = ({ 
-  gameState, setGameState, score, setScore, lives, setLives, difficulty, setMultiplier 
+  gameState, setGameState, score, setScore, lives, setLives, difficulty, setMultiplier, levelIndex, campaignMode, difficultyMultiplier, onLevelComplete
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const requestRef = useRef<number>(0);
@@ -53,6 +57,9 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
   const paddleGhostsRef = useRef<PaddleGhost[]>([]);
   const shakeRef = useRef<number>(0); // Screen shake magnitude
   
+  // Track initialized level to prevent resetting on Resume
+  const prevLevelKey = useRef<string>("");
+
   const paddleRef = useRef<Paddle>({
     x: (CANVAS_WIDTH - PADDLE_WIDTH) / 2,
     y: CANVAS_HEIGHT - PADDLE_OFFSET_BOTTOM,
@@ -87,6 +94,10 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
   const isCriticalModeRef = useRef<boolean>(false);
   const criticalHitCounterRef = useRef<number>(0);
   const criticalHeartTargetRef = useRef<number>(0);
+
+  // Mercy Priority: Wait for final heart logic
+  const isWaitingForFinalHeartRef = useRef<boolean>(false);
+  const finalHeartIdRef = useRef<number | null>(null);
 
   // Power-up State (Timestamp based for better control)
   const powerUpStateRef = useRef<{
@@ -127,27 +138,78 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     };
   }, []);
 
-  // Initialize Bricks
+  // Initialize Bricks based on Current Level Config
   const initBricks = useCallback(() => {
-    // Reset critical mode on new level
-    const newBricks: Brick[] = [];
-    for (let c = 0; c < BRICK_COLUMN_COUNT; c++) {
-      for (let r = 0; r < BRICK_ROW_COUNT; r++) {
-        const brickX = (c * (BRICK_WIDTH + BRICK_PADDING)) + BRICK_OFFSET_LEFT;
-        const brickY = (r * (BRICK_HEIGHT + BRICK_PADDING)) + BRICK_OFFSET_TOP;
-        newBricks.push({
-          x: brickX,
-          y: brickY,
-          width: BRICK_WIDTH,
-          height: BRICK_HEIGHT,
-          status: 1,
-          color: COLORS.bricks[r % COLORS.bricks.length],
-          value: (BRICK_ROW_COUNT - r) * 10
-        });
-      }
+    // Determine which config to load
+    let config;
+    if (campaignMode === CampaignMode.ARCADE) {
+        config = ARCADE_LEVELS[levelIndex] || ARCADE_LEVELS[0];
+    } else {
+        config = ENDLESS_STAGES[levelIndex] || ENDLESS_STAGES[0];
     }
+
+    // Dynamic Size Calculation
+    // We use the predefined margins, then split the remaining width
+    const totalAvailableWidth = CANVAS_WIDTH - (BRICK_OFFSET_LEFT * 2);
+    const brickWidth = (totalAvailableWidth - (BRICK_PADDING * (config.cols - 1))) / config.cols;
+
+    const newBricks: Brick[] = [];
+    
+    for (let i = 0; i < config.layout.length; i++) {
+        const typeCode = config.layout[i];
+        if (typeCode === 0) continue; // Empty space
+
+        const r = Math.floor(i / config.cols);
+        const c = i % config.cols;
+
+        const brickX = (c * (brickWidth + BRICK_PADDING)) + BRICK_OFFSET_LEFT;
+        const brickY = (r * (BRICK_HEIGHT + BRICK_PADDING)) + BRICK_OFFSET_TOP;
+        
+        let type = BrickType.STANDARD;
+        let health = 1;
+        let value = 10;
+        let color = BRICK_TYPE_COLORS[BrickType.STANDARD];
+
+        if (typeCode === 2) {
+            type = BrickType.DURABLE;
+            health = 2; // Harder bricks
+            value = 30;
+            color = BRICK_TYPE_COLORS[BrickType.DURABLE];
+        } else {
+             // For standard bricks, vary color by row for aesthetics
+             // We can map BrickType 1 to varied colors or strict type colors
+             // Let's stick to standard colors for standard bricks but maybe vary slightly?
+             // Or revert to row-based colors if it's type 1
+             const rowColorIndex = r % 6;
+             const rowColors = [
+                '#ef4444', // Red
+                '#f97316', // Orange
+                '#eab308', // Yellow
+                '#22c55e', // Green
+                '#3b82f6', // Blue
+                '#a855f7', // Purple
+             ];
+             color = rowColors[rowColorIndex];
+        }
+
+        // Apply Difficulty Multiplier to Score Value (Endless Mode)
+        value = Math.floor(value * difficultyMultiplier);
+
+        newBricks.push({
+            x: brickX,
+            y: brickY,
+            width: brickWidth,
+            height: BRICK_HEIGHT,
+            status: health,
+            maxHealth: health,
+            color: color,
+            type: type,
+            value: value
+        });
+    }
+    
     bricksRef.current = newBricks;
-  }, []);
+  }, [levelIndex, campaignMode, difficultyMultiplier]);
 
   const resetPaddle = useCallback(() => {
     const settings = DIFFICULTY_SETTINGS[difficulty];
@@ -189,33 +251,37 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
       radius: BALL_RADIUS,
       dx: dx ?? 0,
       dy: dy ?? 0,
-      speed: settings.ballSpeed,
+      speed: settings.ballSpeed * difficultyMultiplier, // Apply Endless Scaling
       active: isActive,
       spin: 0, // Initialize with no spin
       stuckOffset: 0, // Initialize centered
-      trail: [] // Initialize empty trail
+      trail: [], // Initialize empty trail
     };
     return newBall;
-  }, [difficulty]);
+  }, [difficulty, difficultyMultiplier]);
 
   const resetLevel = useCallback((keepPowerUps = false) => {
     ballsRef.current = [spawnBall(false)];
+    isWaitingForFinalHeartRef.current = false;
+    finalHeartIdRef.current = null;
     
-    // Always reset active effects (paddle size, shield, guns, sticky)
-    laserBeamRef.current = null;
-    shieldActiveRef.current = false;
-    const settings = DIFFICULTY_SETTINGS[difficulty];
-    paddleRef.current.width = PADDLE_WIDTH * settings.paddleWidthFactor;
-    paddleRef.current.isEnlarged = false;
-    
-    powerUpStateRef.current = {
-      enlargeEndTime: 0,
-      shieldEndTime: 0,
-      laserFireTime: 0,
-      stickyEndTime: 0,
-      lightningEndTime: 0,
-      clusterEndTime: 0
-    };
+    // Always reset active effects (paddle size, shield, guns, sticky) if not keeping powerups
+    if (!keepPowerUps) {
+        laserBeamRef.current = null;
+        shieldActiveRef.current = false;
+        const settings = DIFFICULTY_SETTINGS[difficulty];
+        paddleRef.current.width = PADDLE_WIDTH * settings.paddleWidthFactor;
+        paddleRef.current.isEnlarged = false;
+        
+        powerUpStateRef.current = {
+            enlargeEndTime: 0,
+            shieldEndTime: 0,
+            laserFireTime: 0,
+            stickyEndTime: 0,
+            lightningEndTime: 0,
+            clusterEndTime: 0
+        };
+    }
 
     // Only clear falling powerups/particles on a full reset (Menu/New Game), not on death
     if (!keepPowerUps) {
@@ -362,7 +428,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
   const handleTouchEnd = useCallback((e: React.TouchEvent) => {
     // If we released in the upper zone, treat as launch/fire
     if (touchRef.current.zone === 'UPPER') {
-      launchBalls();
+       launchBalls();
     }
     touchRef.current.active = false;
     touchRef.current.zone = null;
@@ -379,7 +445,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     
     switch (type) {
       case PowerUpType.HEART:
-        setLives(prev => Math.min(prev + 1, 4));
+        setLives(prev => prev + 1);
         addFloatingText(x, y - 20, '+1 LIFE', '#ec4899');
         break;
 
@@ -486,7 +552,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
 
   const triggerLightning = (originX: number, originY: number) => {
     // Find active bricks
-    const activeBricks = bricksRef.current.filter(b => b.status === 1);
+    const activeBricks = bricksRef.current.filter(b => b.status > 0);
     
     // Calculate distances
     const targets = activeBricks.map(b => {
@@ -501,8 +567,8 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     const closest = targets.filter(t => t.dist < range).sort((a, b) => a.dist - b.dist).slice(0, 3);
 
     closest.forEach(target => {
-        // Destroy
-        target.brick.status = 0;
+        // Destroy (reduce health by 1)
+        target.brick.status -= 1;
         setScore(prev => prev + target.brick.value);
         
         // Visual Arc
@@ -518,10 +584,18 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         // Add particles
         particlesRef.current.push(...createParticles(target.cx, target.cy, '#facc15'));
         
-        // Chain reaction? No, let's keep it simple to avoid wiping screen in one go.
-        // But we should attempt drop
-        attemptPowerUpDrop(target.cx, target.cy);
+        // Chain reaction only if destroyed
+        if (target.brick.status <= 0) {
+            attemptPowerUpDrop(target.cx, target.cy);
+        }
     });
+  };
+
+  const getAllowedPowerUps = (level: number): PowerUpType[] => {
+    const pool = [PowerUpType.ENLARGE, PowerUpType.STICKY, PowerUpType.HEART];
+    if (level >= 2) pool.push(PowerUpType.LASER, PowerUpType.MULTIBALL);
+    if (level >= 5) pool.push(PowerUpType.CLUSTER, PowerUpType.LIGHTNING, PowerUpType.SHIELD);
+    return pool;
   };
 
   const attemptPowerUpDrop = (x: number, y: number) => {
@@ -560,35 +634,47 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
 
     // --- NORMAL DROP LOGIC ---
     if (!spawnedPowerUp && Math.random() < POWERUP_CHANCE) {
+       const allowed = getAllowedPowerUps(levelIndex);
+       const common = [PowerUpType.LASER, PowerUpType.STICKY, PowerUpType.ENLARGE].filter(t => allowed.includes(t));
+       const uncommon = [PowerUpType.MULTIBALL, PowerUpType.SHIELD].filter(t => allowed.includes(t));
+       const rare = [PowerUpType.CLUSTER, PowerUpType.LIGHTNING].filter(t => allowed.includes(t));
+
        // Weighted Drop System
        const r = Math.random() * 100;
-       let type: PowerUpType;
+       let pool: PowerUpType[] = [];
        
        if (r < 60) {
-           // Common (60%): LASER, STICKY, ENLARGE
-           const pool = [PowerUpType.LASER, PowerUpType.STICKY, PowerUpType.ENLARGE];
-           type = pool[Math.floor(Math.random() * pool.length)];
+           // Common (60%)
+           pool = common;
        } else if (r < 90) {
-           // Uncommon (30%): MULTIBALL, SHIELD
-           const pool = [PowerUpType.MULTIBALL, PowerUpType.SHIELD];
-           type = pool[Math.floor(Math.random() * pool.length)];
+           // Uncommon (30%)
+           pool = uncommon;
        } else {
-           // Rare (10%): CLUSTER, LIGHTNING
-           const pool = [PowerUpType.CLUSTER, PowerUpType.LIGHTNING];
-           type = pool[Math.floor(Math.random() * pool.length)];
+           // Rare (10%)
+           pool = rare;
        }
 
-       powerUpsRef.current.push({
-         id: Math.random(),
-         x: x,
-         y: y,
-         width: 20,
-         height: 20,
-         dy: POWERUP_SPEED,
-         type: type,
-         active: true,
-         color: POWERUP_COLORS[type]
-       });
+       // Fallback logic
+       if (pool.length === 0) {
+            if (uncommon.length > 0) pool = uncommon;
+            else if (common.length > 0) pool = common;
+            else if (allowed.includes(PowerUpType.HEART)) pool = [PowerUpType.HEART];
+       }
+
+       if (pool.length > 0) {
+           const type = pool[Math.floor(Math.random() * pool.length)];
+           powerUpsRef.current.push({
+             id: Math.random(),
+             x: x,
+             y: y,
+             width: 20,
+             height: 20,
+             dy: POWERUP_SPEED,
+             type: type,
+             active: true,
+             color: POWERUP_COLORS[type]
+           });
+       }
     }
   };
 
@@ -608,17 +694,20 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     const beamHalfWidth = 6; // 12px wide hit area covering visual core + inner glow
     
     bricksRef.current.forEach(b => {
-       if (b.status === 1) {
+       if (b.status > 0) {
          const overlap = (paddleCenter + beamHalfWidth >= b.x) && 
                          (paddleCenter - beamHalfWidth <= b.x + b.width);
                          
          if (overlap) {
-            b.status = 0;
+            // INSTANT DESTRUCTION LOGIC
+            b.status = 0; // Vaporize!
+            
             setScore(s => s + b.value); 
             addFloatingText(b.x + b.width / 2, b.y, `+${b.value}`, '#ffffff');
             particlesRef.current.push(...createParticles(b.x + b.width / 2, b.y + b.height / 2, b.color));
             playSound('brick');
             
+            // Always drop powerup check since it's destroyed
             attemptPowerUpDrop(b.x + b.width / 2, b.y + b.height / 2);
          }
        }
@@ -674,6 +763,43 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
       window.removeEventListener('keyup', handleKeyUp);
     };
   }, [gameState, launchBalls, performDash]);
+
+  // Level Update Listener
+  useEffect(() => {
+    const currentLevelKey = `${campaignMode}-${levelIndex}-${difficultyMultiplier}`;
+    
+    // Only run initialization if the level config actually changed AND we are playing
+    if (gameState === GameState.PLAYING && prevLevelKey.current !== currentLevelKey) {
+        prevLevelKey.current = currentLevelKey;
+
+        // Perform "Hard Reset" for the new level
+        initBricks();
+        
+        // Reset Paddle & Ball (clears all powerups from player)
+        resetPaddle();
+        ballsRef.current = [spawnBall(false)];
+        
+        // Clear Environment (clears falling items)
+        powerUpsRef.current = [];
+        particlesRef.current = [];
+        shrapnelsRef.current = [];
+        paddleGhostsRef.current = [];
+        lightningArcsRef.current = [];
+        
+        // Reset Logic Flags
+        isWaitingForFinalHeartRef.current = false;
+        finalHeartIdRef.current = null;
+        
+        let levelText = '';
+        if (campaignMode === CampaignMode.ARCADE) {
+             levelText = `LEVEL ${levelIndex + 1}`;
+        } else {
+             // const loop = Math.floor(difficultyMultiplier); // Unused
+             levelText = `STAGE ${levelIndex + 1}`;
+        }
+        addFloatingText(CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2, levelText, '#ffffff');
+    }
+  }, [levelIndex, initBricks, spawnBall, gameState, campaignMode, difficultyMultiplier, resetPaddle]);
 
   // Game Loop
   const update = useCallback(() => {
@@ -800,6 +926,24 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     
     // Calculate paddle velocity for physics
     const paddleVelocity = paddleRef.current.x - prevPaddleX;
+
+    // --- MERCY PRIORITY WAIT LOGIC ---
+    if (isWaitingForFinalHeartRef.current) {
+        // Check if heart is still active
+        const heart = powerUpsRef.current.find(p => p.id === finalHeartIdRef.current);
+        const heartStillActive = heart && heart.active && heart.y < CANVAS_HEIGHT;
+        
+        // Check if balls are active
+        const ballsActive = ballsRef.current.length > 0 && ballsRef.current.some(b => b.y < CANVAS_HEIGHT + 20);
+
+        if (!heartStillActive || !ballsActive) {
+            // Outcome decided: Either collected heart, missed heart, or ball died.
+            isWaitingForFinalHeartRef.current = false;
+            finalHeartIdRef.current = null;
+            onLevelComplete();
+            return; // Exit update loop for this frame
+        }
+    }
 
     // --- BALL LOGIC ---
     let activeBallsCount = 0;
@@ -932,15 +1076,31 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         // Brick Collision
         for (let i = 0; i < bricksRef.current.length; i++) {
           const b = bricksRef.current[i];
-          if (b.status === 1) {
+          if (b.status > 0) {
             const collision = detectCircleRectCollision(ball, b);
             if (collision.hit) {
-              // --- MOMENTUM PIERCE LOGIC ---
+              let shouldBounce = true;
+              let destroyed = false;
+              
+              // --- NORMAL LOGIC ---
               const currentSpeed = Math.sqrt(ball.dx*ball.dx + ball.dy*ball.dy);
-              const baseSpeed = DIFFICULTY_SETTINGS[difficulty].ballSpeed;
-              const isPierce = currentSpeed > baseSpeed * PIERCE_THRESHOLD_FACTOR;
+              const isMomentumPierce = currentSpeed > DIFFICULTY_SETTINGS[difficulty].ballSpeed * PIERCE_THRESHOLD_FACTOR;
+              
+              b.status -= 1; // Normal damage
+              if (b.status <= 0) destroyed = true;
+              
+              if (isMomentumPierce) {
+                  shouldBounce = false;
+                  playSound('pierce');
+                  ball.dx *= PIERCE_DRAG;
+                  ball.dy *= PIERCE_DRAG;
+                  shakeRef.current = 3;
+              } else {
+                  shouldBounce = true;
+                  playSound('brick');
+              }
 
-              b.status = 0;
+              // Scoring & Effects
               streakRef.current += 1;
               const currentMultiplier = 1 + (streakRef.current * 0.1);
               setMultiplier(currentMultiplier);
@@ -949,16 +1109,8 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
               addFloatingText(b.x + b.width / 2, b.y, `+${points}`, '#ffffff');
               particlesRef.current.push(...createParticles(b.x + b.width / 2, b.y + b.height / 2, b.color));
 
-              if (isPierce) {
-                 // Pierce: Do NOT bounce, apply drag, play special FX
-                 playSound('pierce');
-                 ball.dx *= PIERCE_DRAG;
-                 ball.dy *= PIERCE_DRAG;
-                 // Screen shake kick
-                 shakeRef.current = 5;
-              } else {
-                 // Normal Bounce
-                 playSound('brick');
+              // Bounce Physics
+              if (shouldBounce) {
                  if (collision.axis === 'x') {
                     const dir = ball.x < (b.x + b.width / 2) ? -1 : 1;
                     ball.x += dir * (collision.overlap || 1);
@@ -970,15 +1122,13 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                  }
               }
 
-              // --- SPECIAL POWERUP EFFECTS ---
-              if (lightningActive) {
-                triggerLightning(b.x + b.width / 2, b.y + b.height / 2);
+              // Special effects (Lightning/Cluster)
+              if (lightningActive) triggerLightning(b.x + b.width/2, b.y + b.height/2);
+              if (clusterActive) spawnShrapnel(b.x + b.width/2, b.y + b.height/2);
+              
+              if (destroyed) {
+                  attemptPowerUpDrop(b.x + b.width / 2, b.y + b.height / 2);
               }
-              if (clusterActive) {
-                spawnShrapnel(b.x + b.width / 2, b.y + b.height / 2);
-              }
-
-              attemptPowerUpDrop(b.x + b.width / 2, b.y + b.height / 2);
               break; 
             }
           }
@@ -999,12 +1149,12 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         // Brick Collisions
         for (let i = 0; i < bricksRef.current.length; i++) {
             const b = bricksRef.current[i];
-            if (b.status === 1) {
+            if (b.status > 0) {
                 const rect = { x: b.x, y: b.y, width: b.width, height: b.height };
                 // Simple point check or circle check
                 if (s.x > rect.x && s.x < rect.x + rect.width &&
                     s.y > rect.y && s.y < rect.y + rect.height) {
-                        b.status = 0;
+                        b.status -= 1;
                         setScore(prev => prev + b.value);
                         particlesRef.current.push(...createParticles(s.x, s.y, b.color));
                         playSound('brick');
@@ -1017,9 +1167,10 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     shrapnelsRef.current = shrapnelsRef.current.filter(s => s.life > 0 && s.y < CANVAS_HEIGHT);
 
 
-    // Check Lives
+    // Check Lives (Only if NOT waiting for final heart result)
     ballsRef.current = ballsRef.current.filter(b => b.y < CANVAS_HEIGHT + 50); 
-    if (ballsRef.current.length === 0) {
+    
+    if (!isWaitingForFinalHeartRef.current && ballsRef.current.length === 0) {
       const newLives = lives - 1;
       setLives(newLives);
       streakRef.current = 0; // Reset streak on life loss
@@ -1048,6 +1199,37 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
        }
     });
     powerUpsRef.current = powerUpsRef.current.filter(p => p.active && p.y < CANVAS_HEIGHT);
+
+    // --- CHECK LEVEL COMPLETE ---
+    // Failsafe check at end of frame to catch Ball, Lightning, or Shrapnel destruction
+    if (!isWaitingForFinalHeartRef.current) {
+       const hasBricks = bricksRef.current.some(b => b.status > 0);
+       if (!hasBricks) {
+           // Level Cleared
+           if (lives === 1 && !hasTriggeredMercyEventRef.current) {
+               // Mercy Event: Spawn Heart at Center if player is critical and hasn't used mercy yet
+               const heartId = Math.random();
+               powerUpsRef.current.push({
+                   id: heartId,
+                   x: CANVAS_WIDTH / 2 - 10,
+                   y: CANVAS_HEIGHT / 2, // Spawn in middle
+                   width: 20, height: 20, 
+                   dy: POWERUP_SPEED * 0.8, 
+                   type: PowerUpType.HEART, 
+                   active: true, 
+                   color: POWERUP_COLORS[PowerUpType.HEART]
+               });
+               
+               isWaitingForFinalHeartRef.current = true;
+               finalHeartIdRef.current = heartId;
+               hasTriggeredMercyEventRef.current = true;
+           } else {
+               // Standard Win
+               onLevelComplete();
+               return; // Stop update loop
+           }
+       }
+    }
 
     // --- LASER BEAM ---
     if (laserBeamRef.current) {
@@ -1080,14 +1262,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     });
     floatingTextsRef.current = floatingTextsRef.current.filter(t => t.life > 0);
 
-    // Win Condition
-    const remainingBricks = bricksRef.current.filter(b => b.status === 1).length;
-    if (remainingBricks === 0) {
-       playSound('victory');
-       setGameState(GameState.VICTORY);
-    }
-
-  }, [gameState, difficulty, resetLevel, setGameState, setLives, setScore, lives, setMultiplier, triggerLightning, spawnShrapnel, getLaunchVector]);
+  }, [gameState, difficulty, resetLevel, setGameState, setLives, setScore, lives, setMultiplier, triggerLightning, spawnShrapnel, getLaunchVector, onLevelComplete, campaignMode, difficultyMultiplier]);
 
   const draw = useCallback(() => {
     const canvas = canvasRef.current;
@@ -1399,12 +1574,29 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
 
     // Bricks
     bricksRef.current.forEach(b => {
-      if (b.status === 1) {
+      if (b.status > 0) {
         ctx.beginPath();
         ctx.roundRect(b.x, b.y, b.width, b.height, 4);
         ctx.fillStyle = b.color;
         ctx.fill();
         ctx.closePath();
+        
+        // Visual indicator for durable bricks (cracks or border)
+        if (b.maxHealth > 1) {
+            ctx.strokeStyle = 'rgba(0,0,0,0.3)';
+            ctx.lineWidth = 2;
+            ctx.strokeRect(b.x + 2, b.y + 2, b.width - 4, b.height - 4);
+            
+            if (b.status < b.maxHealth) {
+                // Draw crack
+                ctx.beginPath();
+                ctx.moveTo(b.x + b.width * 0.2, b.y + b.height * 0.2);
+                ctx.lineTo(b.x + b.width * 0.5, b.y + b.height * 0.8);
+                ctx.lineTo(b.x + b.width * 0.8, b.y + b.height * 0.3);
+                ctx.strokeStyle = 'rgba(0,0,0,0.5)';
+                ctx.stroke();
+            }
+        }
       }
     });
 
@@ -1528,13 +1720,17 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     ctx.fill();
     ctx.shadowBlur = 0;
     
-    // Dash Ready Indicator
+    // Dash Ready Indicator (Green Bar) - Offset Left
     if (now >= paddleRef.current.dashCooldown) {
         ctx.fillStyle = '#4ade80'; // Green ready light
-        ctx.fillRect(paddleRef.current.x + paddleRef.current.width/2 - 2, paddleRef.current.y + paddleRef.current.height - 4, 4, 2);
+        const centerX = paddleRef.current.x + paddleRef.current.width / 2;
+        // Two small lights on paddle face
+        ctx.fillRect(centerX - 12, paddleRef.current.y + paddleRef.current.height - 4, 4, 2);
+        
         ctx.shadowBlur = 5;
         ctx.shadowColor = '#4ade80';
-        ctx.fillRect(paddleRef.current.x + paddleRef.current.width/2 - 10, paddleRef.current.y + 22, 20, 3);
+        // Underglow bar - shifted left
+        ctx.fillRect(centerX - 20, paddleRef.current.y + 22, 15, 4);
         ctx.shadowBlur = 0;
     }
 
@@ -1564,8 +1760,6 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
             // Visual Spin Indicator
             let fillStyle = `rgba(255, 255, 255, ${opacity})`;
             
-            // Use absolute spin to determine intensity
-            // Keyboard max ~1.2, Touch max ~6.0
             if (Math.abs(ball.spin) > 3.0) {
                  fillStyle = `rgba(236, 72, 153, ${opacity})`; // Pink for high spin
             } else if (Math.abs(ball.spin) > 0.5) {
@@ -1582,9 +1776,11 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
 
       ctx.beginPath();
       ctx.arc(ball.x, ball.y, ball.radius, 0, Math.PI * 2);
+      
       ctx.fillStyle = COLORS.ball;
       ctx.shadowBlur = 8;
       ctx.shadowColor = COLORS.ball;
+      
       ctx.fill();
       ctx.shadowBlur = 0;
       ctx.closePath();

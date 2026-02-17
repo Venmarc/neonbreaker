@@ -1,4 +1,4 @@
-import { Difficulty, PowerUpType } from './types';
+import { Difficulty, PowerUpType, BrickType } from './types';
 
 export const CANVAS_WIDTH = 800;
 export const CANVAS_HEIGHT = 600; // Increased to better fill screen
@@ -11,14 +11,14 @@ export const PADDLE_OFFSET_BOTTOM = 40;
 
 export const BALL_RADIUS = 8;
 
-export const BRICK_ROW_COUNT = 6;
-export const BRICK_COLUMN_COUNT = 9;
+// Brick Layout Constants - DYNAMIC NOW
+// These act as default/fallback or purely structural offsets
 export const BRICK_PADDING = 4;
 export const BRICK_OFFSET_TOP = 60;
 export const BRICK_OFFSET_LEFT = 35;
-export const BRICK_HEIGHT = 25;
+export const BRICK_HEIGHT = 25; // Default height, though can be dynamic if desired
 
-export const BRICK_WIDTH = (CANVAS_WIDTH - (BRICK_OFFSET_LEFT * 2) - (BRICK_PADDING * (BRICK_COLUMN_COUNT - 1))) / BRICK_COLUMN_COUNT;
+// Removed Fixed Row/Col counts in favor of LevelConfig
 
 export const COLORS = {
   paddle: '#38bdf8', // Sky 400
@@ -29,14 +29,16 @@ export const COLORS = {
   particles: ['#f472b6', '#22d3ee', '#fbbf24', '#a78bfa'],
   shield: '#22d3ee', // Cyan
   laserBeam: '#ef4444', // Red
-  bricks: [
-    '#ef4444', // Red 500
-    '#f97316', // Orange 500
-    '#eab308', // Yellow 500
-    '#22c55e', // Green 500
-    '#3b82f6', // Blue 500
-    '#a855f7', // Purple 500
-  ]
+};
+
+export const BRICK_TYPE_COLORS = {
+  [BrickType.STANDARD]: '#ef4444', // Red 500
+  [BrickType.DURABLE]: '#a855f7', // Purple 500 (Harder)
+  [BrickType.MIMIC]: '#f97316', // Orange 500
+  [BrickType.HEALER]: '#22c55e', // Green 500
+  [BrickType.SPORE]: '#eab308', // Yellow 500
+  [BrickType.PORTAL]: '#3b82f6', // Blue 500
+  [BrickType.TURRET]: '#64748b', // Slate 500
 };
 
 export const POWERUP_COLORS = {
@@ -53,12 +55,12 @@ export const POWERUP_COLORS = {
 export const DIFFICULTY_SETTINGS = {
   [Difficulty.EASY]: {
     ballSpeed: 4,
-    lives: 4,
+    lives: 2,
     paddleWidthFactor: 1.2
   },
   [Difficulty.MEDIUM]: {
     ballSpeed: 6,
-    lives: 3,
+    lives: 2,
     paddleWidthFactor: 1.0
   },
   [Difficulty.HARD]: {

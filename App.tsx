@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
 import GameCanvas from './components/GameCanvas';
-import { GameState, Difficulty } from './types';
-import { Play, RotateCcw, Trophy, Settings, Home, Volume2, VolumeX, ArrowLeft, Heart, Zap, HelpCircle, X } from 'lucide-react';
+import { GameState, Difficulty, CampaignMode } from './types';
+import { Play, RotateCcw, Trophy, Settings, Home, Volume2, VolumeX, ArrowLeft, Heart, Zap, HelpCircle, X, ChevronsRight, Infinity, Layers } from 'lucide-react';
 import { playSound, startMusic, stopMusic, setMusicVolume, setSfxVolume, getMusicVolume, getSfxVolume } from './utils/audio';
 import { DIFFICULTY_SETTINGS } from './constants';
+import { ARCADE_LEVELS, ENDLESS_STAGES } from './data/levels';
 import { useGameScale } from './hooks/useGameScale';
 import './App.css';
 
@@ -22,6 +23,11 @@ const App: React.FC = () => {
   const [showHelp, setShowHelp] = useState(false);
   const [countdown, setCountdown] = useState(3);
   
+  // Campaign State
+  const [campaignMode, setCampaignMode] = useState<CampaignMode>(CampaignMode.ARCADE);
+  const [levelIndex, setLevelIndex] = useState(0); // 0-based index for array access
+  const [difficultyMultiplier, setDifficultyMultiplier] = useState(1.0); // Increases in Endless
+
   // Responsive Scale
   const scale = useGameScale(BASE_WIDTH, BASE_HEIGHT);
 
@@ -108,23 +114,62 @@ const App: React.FC = () => {
     }
   }, [gameState]);
 
-  const startGame = () => {
+  const startArcade = () => {
+    setCampaignMode(CampaignMode.ARCADE);
+    setLevelIndex(0);
+    setDifficultyMultiplier(1.0);
+    initializeGame();
+  };
+
+  const startEndless = () => {
+    setCampaignMode(CampaignMode.ENDLESS);
+    setLevelIndex(0);
+    setDifficultyMultiplier(1.0);
+    initializeGame();
+  };
+
+  const initializeGame = () => {
     playSound('start');
     setScore(0);
     setMultiplier(1);
     // Reset lives based on difficulty
     setLives(DIFFICULTY_SETTINGS[difficulty].lives);
     setGameState(GameState.PLAYING);
+    setGameKey(prev => prev + 1);
   };
 
   const restartGame = () => {
-    setGameKey(prev => prev + 1); // Force remount
-    setScore(0);
-    setMultiplier(1);
-    // Reset lives based on difficulty
-    setLives(DIFFICULTY_SETTINGS[difficulty].lives);
-    setGameState(GameState.PLAYING);
-    playSound('start');
+    // Restart current mode
+    initializeGame();
+  };
+
+  const handleLevelComplete = () => {
+    playSound('victory');
+    setGameState(GameState.LEVEL_TRANSITION);
+    
+    // Transition delay
+    setTimeout(() => {
+      if (campaignMode === CampaignMode.ARCADE) {
+          const nextIndex = levelIndex + 1;
+          if (nextIndex < ARCADE_LEVELS.length) {
+              setLevelIndex(nextIndex);
+              setGameState(GameState.PLAYING);
+          } else {
+              setGameState(GameState.VICTORY); // Game Beaten
+          }
+      } else {
+          // Endless Mode Logic
+          const nextIndex = levelIndex + 1;
+          if (nextIndex < ENDLESS_STAGES.length) {
+              setLevelIndex(nextIndex);
+          } else {
+              // Loop back to start, increase difficulty
+              setLevelIndex(0);
+              setDifficultyMultiplier(prev => prev + 0.1);
+          }
+          setGameState(GameState.PLAYING);
+      }
+    }, 2000); // 2 seconds banner
   };
 
   const returnToMenu = () => {
@@ -205,8 +250,18 @@ const App: React.FC = () => {
     </div>
   );
 
-  const showHud = gameState === GameState.PLAYING || gameState === GameState.PAUSED || gameState === GameState.RESUMING;
+  const showHud = gameState === GameState.PLAYING || gameState === GameState.PAUSED || gameState === GameState.RESUMING || gameState === GameState.LEVEL_TRANSITION;
   const isHotStreak = multiplier >= 3.0;
+  
+  // Get formatted level display
+  const getLevelDisplay = () => {
+    if (campaignMode === CampaignMode.ARCADE) {
+        return `LEVEL ${levelIndex + 1}`;
+    } else {
+        const loop = Math.floor(difficultyMultiplier); 
+        return `STAGE ${levelIndex + 1}`;
+    }
+  };
 
   return (
     <div className="app-container">
@@ -252,11 +307,17 @@ const App: React.FC = () => {
               
               <div className="flex flex-col items-center">
                 <span className="text-slate-400 text-[10px] font-bold uppercase tracking-widest mb-1">Status</span>
-                 {(gameState === GameState.PLAYING || gameState === GameState.RESUMING) && (
-                    <span className="text-green-400 text-xs font-bold flex items-center gap-2">
-                      <span className={`w-2 h-2 rounded-full bg-green-500 ${gameState === GameState.RESUMING ? 'animate-ping' : 'animate-pulse'}`}></span>
-                      {gameState === GameState.RESUMING ? 'READY' : difficulty}
-                    </span>
+                 {(gameState === GameState.PLAYING || gameState === GameState.RESUMING || gameState === GameState.LEVEL_TRANSITION) && (
+                    <div className="flex flex-col items-center">
+                        <span className="text-green-400 text-xs font-bold flex items-center gap-2">
+                        <span className={`w-2 h-2 rounded-full bg-green-500 ${gameState === GameState.RESUMING ? 'animate-ping' : 'animate-pulse'}`}></span>
+                        {getLevelDisplay()}
+                        </span>
+                        <span className="text-[10px] text-slate-500 font-bold">
+                            {campaignMode} - {difficulty}
+                            {difficultyMultiplier > 1 && <span className="text-red-400 ml-1">+{Math.round((difficultyMultiplier - 1) * 100)}%</span>}
+                        </span>
+                    </div>
                  )}
                  {gameState === GameState.PAUSED && <span className="text-yellow-500 text-xs font-bold animate-pulse">PAUSED</span>}
               </div>
@@ -264,14 +325,10 @@ const App: React.FC = () => {
               <div className="flex flex-col items-end">
                 <span className="text-slate-400 text-[10px] font-bold uppercase tracking-widest">Lives</span>
                 <div className="flex gap-1 mt-1">
-                  {[...Array(4)].map((_, i) => (
+                  {[...Array(Math.max(0, lives))].map((_, i) => (
                     <Heart 
                       key={i} 
-                      className={`w-5 h-5 transition-all duration-300 ${
-                        i < lives 
-                          ? 'fill-pink-500 text-pink-500 drop-shadow-[0_0_8px_rgba(236,72,153,0.6)]' 
-                          : 'fill-slate-800 text-slate-800 opacity-20'
-                      }`} 
+                      className="w-5 h-5 fill-pink-500 text-pink-500 drop-shadow-[0_0_8px_rgba(236,72,153,0.6)] animate-pulse" 
                     />
                   ))}
                 </div>
@@ -292,6 +349,10 @@ const App: React.FC = () => {
                 setLives={setLives}
                 difficulty={difficulty}
                 setMultiplier={setMultiplier}
+                levelIndex={levelIndex}
+                campaignMode={campaignMode}
+                difficultyMultiplier={difficultyMultiplier}
+                onLevelComplete={handleLevelComplete}
             />
 
             {/* Resume Countdown Overlay */}
@@ -303,10 +364,26 @@ const App: React.FC = () => {
               </div>
             )}
 
+            {/* Level Transition Overlay */}
+            {gameState === GameState.LEVEL_TRANSITION && (
+              <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-40 transition-all duration-500">
+                <div className="flex flex-col items-center animate-in slide-in-from-right duration-700 fade-in">
+                   <div className="flex items-center gap-4 text-cyan-400 drop-shadow-[0_0_20px_rgba(34,211,238,0.8)]">
+                       <ChevronsRight className="w-12 h-12" />
+                       <h2 className="text-6xl font-black font-[Orbitron] italic tracking-tighter">
+                          CLEARED
+                       </h2>
+                       <ChevronsRight className="w-12 h-12" />
+                   </div>
+                   <p className="text-slate-300 mt-4 font-mono text-lg animate-pulse">NEXT WAVE INCOMING...</p>
+                </div>
+              </div>
+            )}
+
             {/* Menu Overlay */}
             {gameState === GameState.MENU && (
             <div className="absolute inset-0 bg-slate-900/80 backdrop-blur-sm flex flex-col items-center justify-center rounded-lg z-20">
-                <div className="text-center p-8 border border-white/10 rounded-2xl bg-white/5 shadow-2xl backdrop-blur-md w-80">
+                <div className="text-center p-8 border border-white/10 rounded-2xl bg-white/5 shadow-2xl backdrop-blur-md w-96">
                 <Trophy className="w-16 h-16 text-yellow-400 mx-auto mb-4 drop-shadow-[0_0_15px_rgba(250,204,21,0.5)]" />
                 <h2 className="text-3xl font-bold text-white mb-2 font-[Orbitron]">High Score</h2>
                 <p className="text-4xl font-mono text-cyan-400 mb-6">{highScore}</p>
@@ -320,13 +397,30 @@ const App: React.FC = () => {
                     </div>
                 </div>
                 
-                <button 
-                    onClick={startGame}
-                    className="w-full py-3 bg-cyan-500 hover:bg-cyan-400 text-slate-900 font-bold rounded-full transition-all hover:scale-105 active:scale-95 shadow-[0_0_20px_rgba(6,182,212,0.5)] hover:shadow-[0_0_30px_rgba(6,182,212,0.8)] flex items-center justify-center gap-2"
-                >
-                    <Play className="w-5 h-5 fill-current" />
-                    START GAME
-                </button>
+                <div className="space-y-4">
+                    <button 
+                        onClick={startArcade}
+                        className="w-full py-4 bg-cyan-500 hover:bg-cyan-400 text-slate-900 font-bold rounded-lg transition-all hover:scale-105 active:scale-95 shadow-[0_0_20px_rgba(6,182,212,0.5)] hover:shadow-[0_0_30px_rgba(6,182,212,0.8)] flex items-center justify-center gap-3"
+                    >
+                        <Layers className="w-6 h-6 fill-current" />
+                        <div className="text-left">
+                            <div className="leading-none text-lg">ARCADE MODE</div>
+                            <div className="text-[10px] opacity-75 font-normal">10 Progressive Levels</div>
+                        </div>
+                    </button>
+
+                    <button 
+                        onClick={startEndless}
+                        className="w-full py-4 bg-purple-500 hover:bg-purple-400 text-slate-900 font-bold rounded-lg transition-all hover:scale-105 active:scale-95 shadow-[0_0_20px_rgba(168,85,247,0.5)] hover:shadow-[0_0_30px_rgba(168,85,247,0.8)] flex items-center justify-center gap-3"
+                    >
+                        <Infinity className="w-6 h-6" />
+                        <div className="text-left">
+                            <div className="leading-none text-lg">ENDLESS MODE</div>
+                            <div className="text-[10px] opacity-75 font-normal">Infinite Looping Stages</div>
+                        </div>
+                    </button>
+                </div>
+
                 </div>
             </div>
             )}
@@ -520,7 +614,7 @@ const App: React.FC = () => {
             {gameState === GameState.VICTORY && (
             <div className="absolute inset-0 bg-green-900/80 backdrop-blur-sm flex flex-col items-center justify-center rounded-lg z-20">
                 <h2 className="text-5xl font-black text-white mb-2 drop-shadow-md font-[Orbitron]">VICTORY!</h2>
-                <p className="text-green-200 text-xl mb-8">All bricks cleared!</p>
+                <p className="text-green-200 text-xl mb-8">Campaign Complete!</p>
                 <div className="flex gap-4">
                     <button 
                     onClick={returnToMenu}

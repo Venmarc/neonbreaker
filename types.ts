@@ -5,13 +5,19 @@ export enum GameState {
   GAME_OVER = 'GAME_OVER',
   VICTORY = 'VICTORY',
   SETTINGS = 'SETTINGS',
-  RESUMING = 'RESUMING'
+  RESUMING = 'RESUMING',
+  LEVEL_TRANSITION = 'LEVEL_TRANSITION'
 }
 
 export enum Difficulty {
   EASY = 'EASY',
   MEDIUM = 'MEDIUM',
   HARD = 'HARD'
+}
+
+export enum CampaignMode {
+  ARCADE = 'ARCADE',
+  ENDLESS = 'ENDLESS'
 }
 
 export enum PowerUpType {
@@ -23,6 +29,24 @@ export enum PowerUpType {
   HEART = 'HEART',
   LIGHTNING = 'LIGHTNING',
   CLUSTER = 'CLUSTER'
+}
+
+export enum BrickType {
+  EMPTY = 0,
+  STANDARD = 1,
+  DURABLE = 2,
+  MIMIC = 3,
+  HEALER = 4,
+  SPORE = 5,
+  PORTAL = 6,
+  TURRET = 7
+}
+
+export interface LevelConfig {
+  id: number;
+  rows: number;
+  cols: number;
+  layout: number[]; // Flattened array
 }
 
 export interface Position {
@@ -66,7 +90,9 @@ export interface Brick {
   width: number;
   height: number;
   color: string;
-  status: number; // 1 = active, 0 = destroyed
+  type: BrickType;
+  status: number; // Current Health (0 = destroyed)
+  maxHealth: number;
   value: number;
 }
 
@@ -75,7 +101,7 @@ export interface Particle {
   y: number;
   dx: number;
   dy: number;
-  life: number;
+  life: number; // Opacity/Life from 1 to 0
   color: string;
   size: number;
 }

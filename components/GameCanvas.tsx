@@ -5,7 +5,7 @@ import {
   DIFFICULTY_SETTINGS, POWERUP_CHANCE, POWERUP_COLORS, POWERUP_SPEED,
   ENLARGE_DURATION, SHIELD_DURATION, LASER_DELAY, POWERUP_WARNING_MS, STICKY_DURATION,
   DASH_COOLDOWN_MS, DASH_DISTANCE, LIGHTNING_DURATION, CLUSTER_DURATION,
-  PIERCE_THRESHOLD_FACTOR, PIERCE_DRAG, BRICK_TYPE_COLORS, BRICK_HEIGHT
+  PIERCE_THRESHOLD_FACTOR, PIERCE_DRAG, BRICK_TYPE_COLORS, BRICK_HEIGHT, MAX_BALLS
 } from '../constants';
 import { GameState, Difficulty, Ball, Paddle, Brick, Particle, PowerUp, PowerUpType, LightningArc, Shrapnel, PaddleGhost, CampaignMode, BrickType } from '../types';
 import { detectCircleRectCollision, createParticles, updateParticles } from '../utils/physics';
@@ -473,29 +473,52 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
 
       case PowerUpType.MULTIBALL:
         const currentBalls = [...ballsRef.current];
-        currentBalls.forEach(b => {
+        let spaceLeft = MAX_BALLS - ballsRef.current.length;
+        
+        if (spaceLeft <= 0) {
+            addFloatingText(x, y - 20, 'MAX BALLS', '#fbbf24');
+            break;
+        }
+
+        const ballsToAdd: Ball[] = [];
+        
+        for (const b of currentBalls) {
+           if (spaceLeft <= 0) break;
+
            if (b.active) {
-             // Spawn 2 new balls per active ball
-             const b1 = spawnBall(true, b.x, b.y, b.dx * 0.8 + 1, b.dy);
-             const b2 = spawnBall(true, b.x, b.y, b.dx * 0.8 - 1, b.dy);
-             ballsRef.current.push(b1, b2);
+             // Attempt 1
+             if (spaceLeft > 0) {
+                 ballsToAdd.push(spawnBall(true, b.x, b.y, b.dx * 0.8 + 1, b.dy));
+                 spaceLeft--;
+             }
+             // Attempt 2
+             if (spaceLeft > 0) {
+                 ballsToAdd.push(spawnBall(true, b.x, b.y, b.dx * 0.8 - 1, b.dy));
+                 spaceLeft--;
+             }
            } else {
-             // Handle stuck balls - spawn new balls stuck as well
+             // Stuck logic
              const offset = b.stuckOffset ?? 0;
              const padWidth = paddleRef.current.width;
-             
-             // Spawn 2 new stuck balls with offset spread
-             const b1 = spawnBall(false);
-             const b2 = spawnBall(false);
-             
-             // Clamp offsets to stay on paddle
              const maxOffset = padWidth / 2 - BALL_RADIUS;
-             b1.stuckOffset = Math.max(-maxOffset, Math.min(maxOffset, offset - 20));
-             b2.stuckOffset = Math.max(-maxOffset, Math.min(maxOffset, offset + 20));
-             
-             ballsRef.current.push(b1, b2);
+
+             if (spaceLeft > 0) {
+                 const b1 = spawnBall(false);
+                 b1.stuckOffset = Math.max(-maxOffset, Math.min(maxOffset, offset - 20));
+                 ballsToAdd.push(b1);
+                 spaceLeft--;
+             }
+             if (spaceLeft > 0) {
+                 const b2 = spawnBall(false);
+                 b2.stuckOffset = Math.max(-maxOffset, Math.min(maxOffset, offset + 20));
+                 ballsToAdd.push(b2);
+                 spaceLeft--;
+             }
            }
-        });
+        }
+        
+        ballsRef.current.push(...ballsToAdd);
+        
         if (ballsRef.current.length === 0) {
            // If stuck with no balls (edge case), spawn one
            const b = spawnBall(true, paddleRef.current.x + paddleRef.current.width/2, paddleRef.current.y - 20, 2, -4);
@@ -1870,6 +1893,18 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
       initBricks();
       resetPaddle();
       resetLevel(false);
+    } else if (gameState === GameState.VICTORY || gameState === GameState.LEVEL_TRANSITION) {
+        // Aggressive Cleanup to prevent lag
+        ballsRef.current = [];
+        particlesRef.current = [];
+        powerUpsRef.current = [];
+        shrapnelsRef.current = [];
+        paddleGhostsRef.current = [];
+        lightningArcsRef.current = [];
+        paddleImpactsRef.current = [];
+        
+        // Ensure laser is off
+        laserBeamRef.current = null;
     }
   }, [gameState, initBricks, resetPaddle, resetLevel]);
 

@@ -87,3 +87,6 @@ export const DASH_GHOST_DURATION = 0.2; // 200ms visual trail
 // Momentum Pierce Mechanics
 export const PIERCE_THRESHOLD_FACTOR = 1.5; // Speed must be > 1.5x base speed to pierce
 export const PIERCE_DRAG = 0.85; // Speed multiplier after piercing (15% slow down)
+
+// Performance Limits
+export const MAX_BALLS = 81;

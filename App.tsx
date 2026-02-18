@@ -139,6 +139,12 @@ const App: React.FC = () => {
   };
 
   const restartGame = () => {
+    // Only reset to Level 1 if we actually beat the campaign (Victory)
+    // The user requested to NOT reset level on failure (Game Over), so we keep current index there.
+    if (gameState === GameState.VICTORY) {
+        setLevelIndex(0);
+        setDifficultyMultiplier(1.0);
+    }
     // Restart current mode
     initializeGame();
   };

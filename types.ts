@@ -82,6 +82,18 @@ export interface Paddle {
   isEnlarged: boolean;
   flashTimer: number; // For visual feedback
   dashCooldown: number; // Timestamp when dash is ready
+  isStunned?: boolean;
+  stunStartTime?: number;
+}
+
+export interface EnemyLaser {
+  id: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  dy: number;
+  color: string;
 }
 
 export interface Brick {
@@ -94,6 +106,8 @@ export interface Brick {
   status: number; // Current Health (0 = destroyed)
   maxHealth: number;
   value: number;
+  isMimicRevealed?: boolean;
+  lastActionTime?: number;
 }
 
 export interface Particle {

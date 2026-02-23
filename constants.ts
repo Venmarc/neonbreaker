@@ -44,12 +44,14 @@ export const BRICK_TYPE_COLORS = {
 export const POWERUP_COLORS = {
   [PowerUpType.ENLARGE]: '#22c55e', // Green
   [PowerUpType.MULTIBALL]: '#fbbf24', // Amber
-  [PowerUpType.SHIELD]: '#38bdf8', // Sky
+  [PowerUpType.BARRIER]: '#38bdf8', // Sky (Old Shield)
   [PowerUpType.LASER]: '#ef4444', // Red
   [PowerUpType.STICKY]: '#4ade80', // Green 400
   [PowerUpType.HEART]: '#ec4899', // Pink 500
   [PowerUpType.LIGHTNING]: '#facc15', // Yellow
-  [PowerUpType.CLUSTER]: '#f87171' // Red 400
+  [PowerUpType.CLUSTER]: '#f87171', // Red 400
+  [PowerUpType.ARMOR]: '#00FFFF', // Cyan
+  [PowerUpType.TURRET]: '#D4AF37' // Gold/Brass
 };
 
 export const DIFFICULTY_SETTINGS = {
@@ -72,8 +74,9 @@ export const DIFFICULTY_SETTINGS = {
 
 export const POWERUP_CHANCE = 0.15; // 15% chance
 export const POWERUP_SPEED = 3;
-export const SHIELD_DURATION = 10000; // 10s
+export const BARRIER_DURATION = 10000; // 10s
 export const ENLARGE_DURATION = 10000; // 10s
+export const TURRET_DURATION = 5000; // 5s
 export const STICKY_DURATION = 10000; // 10s
 export const LASER_DELAY = 2000; // 2.0s
 export const LIGHTNING_DURATION = 5000; // 5s

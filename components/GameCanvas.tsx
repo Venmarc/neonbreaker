@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useCallback } from 'react';
+import React, { useRef, useEffect, useCallback, useState } from 'react';
 import { 
   CANVAS_WIDTH, CANVAS_HEIGHT, PADDLE_WIDTH, PADDLE_WIDTH_ENLARGED, PADDLE_HEIGHT, PADDLE_OFFSET_BOTTOM, 
   BALL_RADIUS, COLORS, BRICK_PADDING, BRICK_OFFSET_TOP, BRICK_OFFSET_LEFT,
@@ -55,6 +55,8 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
   const lightningArcsRef = useRef<LightningArc[]>([]);
   const shrapnelsRef = useRef<Shrapnel[]>([]);
   const paddleGhostsRef = useRef<PaddleGhost[]>([]);
+  const enemyLasersRef = useRef<EnemyLaser[]>([]);
+  const playerProjectilesRef = useRef<PlayerProjectile[]>([]);
   const shakeRef = useRef<number>(0); // Screen shake magnitude
   
   // Track initialized level to prevent resetting on Resume
@@ -99,24 +101,42 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
   const isWaitingForFinalHeartRef = useRef<boolean>(false);
   const finalHeartIdRef = useRef<number | null>(null);
 
+  // --- DEV MODE STATE ---
+  const [isDevMode, setIsDevMode] = useState(false);
+  const [isInvincible, setIsInvincible] = useState(false);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+        if (e.code === 'Backquote') {
+            setIsDevMode(prev => !prev);
+        }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
   // Power-up State (Timestamp based for better control)
   const powerUpStateRef = useRef<{
     enlargeEndTime: number;
-    shieldEndTime: number;
+    barrierEndTime: number;
     laserFireTime: number;
     stickyEndTime: number;
     lightningEndTime: number;
     clusterEndTime: number;
+    turretEndTime: number;
+    lastTurretFireTime: number;
   }>({
     enlargeEndTime: 0,
-    shieldEndTime: 0,
+    barrierEndTime: 0,
     laserFireTime: 0,
     stickyEndTime: 0,
     lightningEndTime: 0,
-    clusterEndTime: 0
+    clusterEndTime: 0,
+    turretEndTime: 0,
+    lastTurretFireTime: 0
   });
 
-  const shieldActiveRef = useRef<boolean>(false);
+  const barrierActiveRef = useRef<boolean>(false);
   const laserBeamRef = useRef<{active: boolean, x: number, y: number, timer: number, alpha: number} | null>(null);
 
   const keysPressed = useRef<{ [key: string]: boolean }>({});
@@ -170,32 +190,66 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         let value = 10;
         let color = BRICK_TYPE_COLORS[BrickType.STANDARD];
 
-        if (typeCode === 2) {
-            type = BrickType.DURABLE;
-            health = 2; // Harder bricks
-            value = 30;
-            color = BRICK_TYPE_COLORS[BrickType.DURABLE];
-        } else {
-             // For standard bricks, vary color by row for aesthetics
-             // We can map BrickType 1 to varied colors or strict type colors
-             // Let's stick to standard colors for standard bricks but maybe vary slightly?
-             // Or revert to row-based colors if it's type 1
-             const rowColorIndex = r % 6;
-             const rowColors = [
-                '#ef4444', // Red
-                '#f97316', // Orange
-                '#eab308', // Yellow
-                '#22c55e', // Green
-                '#3b82f6', // Blue
-                '#a855f7', // Purple
-             ];
-             color = rowColors[rowColorIndex];
+        switch (typeCode) {
+            case 2:
+                type = BrickType.DURABLE;
+                health = 2; // Harder bricks
+                value = 30;
+                color = BRICK_TYPE_COLORS[BrickType.DURABLE];
+                break;
+            case 3:
+                type = BrickType.MIMIC;
+                health = 1;
+                value = 20;
+                color = BRICK_TYPE_COLORS[BrickType.MIMIC];
+                break;
+            case 4:
+                type = BrickType.HEALER;
+                health = 1;
+                value = 50;
+                color = BRICK_TYPE_COLORS[BrickType.HEALER];
+                break;
+            case 5:
+                type = BrickType.SPORE;
+                health = 1;
+                value = 20;
+                color = BRICK_TYPE_COLORS[BrickType.SPORE];
+                break;
+            case 6:
+                type = BrickType.PORTAL;
+                health = 1;
+                value = 40;
+                color = BRICK_TYPE_COLORS[BrickType.PORTAL];
+                break;
+            case 7:
+                type = BrickType.TURRET;
+                health = 3;
+                value = 100;
+                color = BRICK_TYPE_COLORS[BrickType.TURRET];
+                break;
+            default:
+                // Standard (1)
+                type = BrickType.STANDARD;
+                health = 1;
+                value = 10;
+                // For standard bricks, vary color by row for aesthetics
+                const rowColorIndex = r % 6;
+                const rowColors = [
+                    '#ef4444', // Red
+                    '#f97316', // Orange
+                    '#eab308', // Yellow
+                    '#22c55e', // Green
+                    '#3b82f6', // Blue
+                    '#a855f7', // Purple
+                ];
+                color = rowColors[rowColorIndex];
+                break;
         }
 
         // Apply Difficulty Multiplier to Score Value (Endless Mode)
         value = Math.floor(value * difficultyMultiplier);
 
-        newBricks.push({
+        const newBrick: Brick = {
             x: brickX,
             y: brickY,
             width: brickWidth,
@@ -205,7 +259,13 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
             color: color,
             type: type,
             value: value
-        });
+        };
+
+        if (type === BrickType.HEALER || type === BrickType.SPORE || type === BrickType.TURRET) {
+            newBrick.lastActionTime = Date.now();
+        }
+
+        newBricks.push(newBrick);
     }
     
     bricksRef.current = newBricks;
@@ -221,24 +281,29 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
       color: COLORS.paddle,
       isEnlarged: false,
       flashTimer: 0,
-      dashCooldown: 0
+      dashCooldown: 0,
+      hasArmor: false
     };
     // Clear effects
-    shieldActiveRef.current = false;
+    barrierActiveRef.current = false;
     laserBeamRef.current = null;
     paddleImpactsRef.current = [];
     paddleGhostsRef.current = [];
     lightningArcsRef.current = [];
     shrapnelsRef.current = [];
+    enemyLasersRef.current = [];
+    playerProjectilesRef.current = [];
     shakeRef.current = 0;
     
     powerUpStateRef.current = {
       enlargeEndTime: 0,
-      shieldEndTime: 0,
+      barrierEndTime: 0,
       laserFireTime: 0,
       stickyEndTime: 0,
       lightningEndTime: 0,
-      clusterEndTime: 0
+      clusterEndTime: 0,
+      turretEndTime: 0,
+      lastTurretFireTime: 0
     };
   }, [difficulty]);
 
@@ -268,18 +333,21 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     // Always reset active effects (paddle size, shield, guns, sticky) if not keeping powerups
     if (!keepPowerUps) {
         laserBeamRef.current = null;
-        shieldActiveRef.current = false;
+        barrierActiveRef.current = false;
         const settings = DIFFICULTY_SETTINGS[difficulty];
         paddleRef.current.width = PADDLE_WIDTH * settings.paddleWidthFactor;
         paddleRef.current.isEnlarged = false;
+        paddleRef.current.hasArmor = false;
         
         powerUpStateRef.current = {
             enlargeEndTime: 0,
-            shieldEndTime: 0,
+            barrierEndTime: 0,
             laserFireTime: 0,
             stickyEndTime: 0,
             lightningEndTime: 0,
-            clusterEndTime: 0
+            clusterEndTime: 0,
+            turretEndTime: 0,
+            lastTurretFireTime: 0
         };
     }
 
@@ -527,10 +595,20 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         addFloatingText(x, y - 20, 'MULTIBALL', '#fbbf24');
         break;
 
-      case PowerUpType.SHIELD:
-        powerUpStateRef.current.shieldEndTime = now + SHIELD_DURATION;
-        shieldActiveRef.current = true;
-        addFloatingText(x, y - 20, 'SHIELD', '#38bdf8');
+      case PowerUpType.BARRIER:
+        powerUpStateRef.current.barrierEndTime = now + BARRIER_DURATION;
+        barrierActiveRef.current = true;
+        addFloatingText(x, y - 20, 'BARRIER', '#38bdf8');
+        break;
+
+      case PowerUpType.ARMOR:
+        paddleRef.current.hasArmor = true;
+        addFloatingText(x, y - 20, 'ARMOR', '#00FFFF');
+        break;
+
+      case PowerUpType.TURRET:
+        powerUpStateRef.current.turretEndTime = now + TURRET_DURATION;
+        addFloatingText(x, y - 20, 'TURRET', '#D4AF37');
         break;
       
       case PowerUpType.STICKY:
@@ -616,8 +694,8 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
 
   const getAllowedPowerUps = (level: number): PowerUpType[] => {
     const pool = [PowerUpType.ENLARGE, PowerUpType.STICKY, PowerUpType.HEART];
-    if (level >= 2) pool.push(PowerUpType.LASER, PowerUpType.MULTIBALL);
-    if (level >= 5) pool.push(PowerUpType.CLUSTER, PowerUpType.LIGHTNING, PowerUpType.SHIELD);
+    if (level >= 2) pool.push(PowerUpType.LASER, PowerUpType.MULTIBALL, PowerUpType.TURRET);
+    if (level >= 5) pool.push(PowerUpType.CLUSTER, PowerUpType.LIGHTNING, PowerUpType.BARRIER);
     return pool;
   };
 
@@ -659,8 +737,14 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     if (!spawnedPowerUp && Math.random() < POWERUP_CHANCE) {
        const allowed = getAllowedPowerUps(levelIndex);
        const common = [PowerUpType.LASER, PowerUpType.STICKY, PowerUpType.ENLARGE].filter(t => allowed.includes(t));
-       const uncommon = [PowerUpType.MULTIBALL, PowerUpType.SHIELD].filter(t => allowed.includes(t));
+       const uncommon = [PowerUpType.MULTIBALL, PowerUpType.BARRIER].filter(t => allowed.includes(t));
        const rare = [PowerUpType.CLUSTER, PowerUpType.LIGHTNING].filter(t => allowed.includes(t));
+       
+       // Smart Spawn for ARMOR
+       const isTurretActive = bricksRef.current.some(b => b.type === BrickType.TURRET && b.status > 0);
+       if (isTurretActive) {
+           uncommon.push(PowerUpType.ARMOR);
+       }
 
        // Weighted Drop System
        const r = Math.random() * 100;
@@ -808,6 +892,8 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         shrapnelsRef.current = [];
         paddleGhostsRef.current = [];
         lightningArcsRef.current = [];
+        enemyLasersRef.current = [];
+        playerProjectilesRef.current = [];
         
         // Reset Logic Flags
         isWaitingForFinalHeartRef.current = false;
@@ -824,10 +910,161 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     }
   }, [levelIndex, initBricks, spawnBall, gameState, campaignMode, difficultyMultiplier, resetPaddle]);
 
+  // --- LIVING BRICK LOGIC ---
+  const updateLivingBricks = useCallback(() => {
+    const now = Date.now();
+    const bricks = bricksRef.current;
+    
+    // Helper to find brick at position with tolerance
+    const findBrickAt = (x: number, y: number) => {
+        return bricks.find(b => 
+            b.status > 0 && 
+            Math.abs(b.x - x) < 5 && 
+            Math.abs(b.y - y) < 5
+        );
+    };
+
+    // Helper to check bounds
+    const isWithinBounds = (x: number, y: number, width: number, height: number) => {
+        return x >= BRICK_OFFSET_LEFT - 5 && 
+               x + width <= CANVAS_WIDTH - BRICK_OFFSET_LEFT + 5 &&
+               y >= BRICK_OFFSET_TOP - 5 &&
+               y + height <= CANVAS_HEIGHT - 200; // Don't grow too low
+    };
+
+    // Use a standard for loop to avoid issues with modifying array during iteration if we were removing
+    // But here we are adding. forEach is safe as it iterates over initial length usually, 
+    // but let's be safe and iterate over a snapshot or just handle it.
+    // Actually, we want to process only the bricks that existed at start of frame.
+    const initialBricks = [...bricks];
+
+    initialBricks.forEach(brick => {
+        if (brick.status <= 0) return;
+
+        // HEALER LOGIC
+        if (brick.type === BrickType.HEALER) {
+            if (!brick.lastActionTime) brick.lastActionTime = now;
+            if (now - brick.lastActionTime > 5000) {
+                brick.lastActionTime = now;
+                
+                // Check adjacent positions
+                const neighbors = [
+                    { x: brick.x - (brick.width + BRICK_PADDING), y: brick.y }, // Left
+                    { x: brick.x + (brick.width + BRICK_PADDING), y: brick.y }, // Right
+                    { x: brick.x, y: brick.y - (BRICK_HEIGHT + BRICK_PADDING) }, // Up
+                    { x: brick.x, y: brick.y + (BRICK_HEIGHT + BRICK_PADDING) }  // Down
+                ];
+
+                let actionTaken = false;
+
+                // Priority 1: Heal Durable
+                for (const pos of neighbors) {
+                    const neighbor = findBrickAt(pos.x, pos.y);
+                    if (neighbor && neighbor.type === BrickType.DURABLE && neighbor.status < neighbor.maxHealth) {
+                        neighbor.status = neighbor.maxHealth;
+                        // Visuals
+                        particlesRef.current.push(...createParticles(neighbor.x + neighbor.width/2, neighbor.y + neighbor.height/2, '#22c55e'));
+                        addFloatingText(neighbor.x + neighbor.width/2, neighbor.y, "HEALED", '#22c55e');
+                        actionTaken = true;
+                        break; // Heal one per tick
+                    }
+                }
+
+                // Priority 2: Revive/Spawn Standard if no healing needed
+                if (!actionTaken) {
+                    // Shuffle neighbors to pick random empty spot
+                    const shuffled = neighbors.sort(() => Math.random() - 0.5);
+                    for (const pos of shuffled) {
+                        if (isWithinBounds(pos.x, pos.y, brick.width, BRICK_HEIGHT) && !findBrickAt(pos.x, pos.y)) {
+                            // Spawn new brick
+                            bricksRef.current.push({
+                                x: pos.x,
+                                y: pos.y,
+                                width: brick.width,
+                                height: BRICK_HEIGHT,
+                                status: 1,
+                                maxHealth: 1,
+                                color: BRICK_TYPE_COLORS[BrickType.STANDARD],
+                                type: BrickType.STANDARD,
+                                value: 10
+                            });
+                            particlesRef.current.push(...createParticles(pos.x + brick.width/2, pos.y + BRICK_HEIGHT/2, '#22c55e'));
+                            actionTaken = true;
+                            break;
+                        }
+                    }
+                }
+                
+                // Visual for Healer activation
+                if (actionTaken) {
+                    particlesRef.current.push(...createParticles(brick.x + brick.width/2, brick.y + brick.height/2, '#22c55e'));
+                }
+            }
+        }
+
+        // SPORE LOGIC
+        if (brick.type === BrickType.SPORE) {
+            if (!brick.lastActionTime) brick.lastActionTime = now;
+            if (now - brick.lastActionTime > 4000) {
+                brick.lastActionTime = now;
+
+                const neighbors = [
+                    { x: brick.x - (brick.width + BRICK_PADDING), y: brick.y },
+                    { x: brick.x + (brick.width + BRICK_PADDING), y: brick.y },
+                    { x: brick.x, y: brick.y - (BRICK_HEIGHT + BRICK_PADDING) },
+                    { x: brick.x, y: brick.y + (BRICK_HEIGHT + BRICK_PADDING) }
+                ];
+
+                const validSpots = neighbors.filter(pos => 
+                    isWithinBounds(pos.x, pos.y, brick.width, BRICK_HEIGHT) && !findBrickAt(pos.x, pos.y)
+                );
+
+                if (validSpots.length > 0) {
+                    const pos = validSpots[Math.floor(Math.random() * validSpots.length)];
+                    bricksRef.current.push({
+                        x: pos.x,
+                        y: pos.y,
+                        width: brick.width,
+                        height: BRICK_HEIGHT,
+                        status: 1,
+                        maxHealth: 1,
+                        color: BRICK_TYPE_COLORS[BrickType.STANDARD],
+                        type: BrickType.STANDARD,
+                        value: 10
+                    });
+                    particlesRef.current.push(...createParticles(pos.x + brick.width/2, pos.y + BRICK_HEIGHT/2, '#eab308'));
+                }
+            }
+        }
+
+        // TURRET LOGIC
+        if (brick.type === BrickType.TURRET) {
+            if (!brick.lastActionTime) brick.lastActionTime = now;
+            if (now - brick.lastActionTime > 3000) {
+                brick.lastActionTime = now;
+                // Fire Laser
+                enemyLasersRef.current.push({
+                    id: Math.random(),
+                    x: brick.x + brick.width / 2 - 2,
+                    y: brick.y + brick.height,
+                    width: 4,
+                    height: 15,
+                    dy: 6,
+                    color: '#ef4444'
+                });
+                playSound('shoot'); // Reuse shoot sound or add new one
+            }
+        }
+    });
+  }, []);
+
   // Game Loop
   const update = useCallback(() => {
     if (gameState !== GameState.PLAYING) return;
     const now = Date.now();
+
+    // Update Living Bricks
+    updateLivingBricks();
 
     // --- TIMED POWERUPS LOGIC ---
     const stickyActive = now < powerUpStateRef.current.stickyEndTime;
@@ -852,8 +1089,8 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     }
 
     // Check Shield Expiry
-    if (shieldActiveRef.current && now > powerUpStateRef.current.shieldEndTime) {
-      shieldActiveRef.current = false;
+    if (barrierActiveRef.current && now > powerUpStateRef.current.barrierEndTime) {
+      barrierActiveRef.current = false;
     }
 
     // Check Laser Fire
@@ -861,9 +1098,80 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
       fireLaser();
       powerUpStateRef.current.laserFireTime = 0;
     }
+
+    // --- TURRET FIRING LOGIC ---
+    if (now < powerUpStateRef.current.turretEndTime) {
+        if (now - powerUpStateRef.current.lastTurretFireTime > 200) {
+            powerUpStateRef.current.lastTurretFireTime = now;
+            // Fire twin pellets
+            playerProjectilesRef.current.push({
+                id: Math.random(),
+                x: paddleRef.current.x,
+                y: paddleRef.current.y,
+                width: 4,
+                height: 10,
+                dy: -8,
+                color: '#FFFF00'
+            });
+            playerProjectilesRef.current.push({
+                id: Math.random(),
+                x: paddleRef.current.x + paddleRef.current.width - 4,
+                y: paddleRef.current.y,
+                width: 4,
+                height: 10,
+                dy: -8,
+                color: '#FFFF00'
+            });
+            playSound('shoot');
+        }
+    }
+
+    // --- PLAYER PROJECTILE LOGIC ---
+    playerProjectilesRef.current.forEach(p => {
+        p.y += p.dy;
+        
+        // Brick Collision
+        for (let i = 0; i < bricksRef.current.length; i++) {
+            const b = bricksRef.current[i];
+            if (b.status > 0) {
+                if (p.x < b.x + b.width &&
+                    p.x + p.width > b.x &&
+                    p.y < b.y + b.height &&
+                    p.y + p.height > b.y) {
+                        
+                        // Hit Brick
+                        b.status -= 1;
+                        setScore(prev => prev + 10); // Small score for pellet hit
+                        particlesRef.current.push(...createParticles(p.x, p.y, '#FFFF00'));
+                        
+                        // Destroy projectile
+                        p.y = -100; 
+                        
+                        if (b.status <= 0) {
+                            attemptPowerUpDrop(b.x + b.width / 2, b.y + b.height / 2);
+                            playSound('brick');
+                        } else {
+                            playSound('hit');
+                        }
+                        break;
+                }
+            }
+        }
+    });
+    playerProjectilesRef.current = playerProjectilesRef.current.filter(p => p.y > 0);
+
+    // --- PADDLE STUN RECOVERY ---
+    if (paddleRef.current.isStunned && paddleRef.current.stunStartTime) {
+        if (now - paddleRef.current.stunStartTime > 1000) {
+            paddleRef.current.isStunned = false;
+            paddleRef.current.stunStartTime = 0;
+        }
+    }
     
     // Update Paddle Color State
-    if (stickyActive) {
+    if (paddleRef.current.isStunned) {
+        paddleRef.current.color = '#94a3b8'; // Gray 400
+    } else if (stickyActive) {
       paddleRef.current.color = POWERUP_COLORS[PowerUpType.STICKY];
     } else if (lightningActive) {
       paddleRef.current.color = POWERUP_COLORS[PowerUpType.LIGHTNING];
@@ -917,38 +1225,83 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     }
 
     // PADDLE MOVEMENT LOGIC
-    if (isTouchActive && touchRef.current.zone === 'LOWER') {
-        const targetX = touchRef.current.x - paddleRef.current.width / 2;
-        const dx = targetX - paddleRef.current.x;
-        const maxStep = 60; 
-        
-        if (Math.abs(dx) > maxStep) {
-            paddleRef.current.x += Math.sign(dx) * maxStep;
-        } else {
-            paddleRef.current.x = targetX;
-        }
+    if (!paddleRef.current.isStunned) {
+        if (isTouchActive && touchRef.current.zone === 'LOWER') {
+            const targetX = touchRef.current.x - paddleRef.current.width / 2;
+            const dx = targetX - paddleRef.current.x;
+            const maxStep = 60; 
+            
+            if (Math.abs(dx) > maxStep) {
+                paddleRef.current.x += Math.sign(dx) * maxStep;
+            } else {
+                paddleRef.current.x = targetX;
+            }
 
-        if (paddleRef.current.x < 0) paddleRef.current.x = 0;
-        if (paddleRef.current.x + paddleRef.current.width > CANVAS_WIDTH) paddleRef.current.x = CANVAS_WIDTH - paddleRef.current.width;
-        
-    } else if (!isHoldingDown || stuckBalls.length === 0) {
-      // Normal Keyboard Mode
-      if (keysPressed.current['ArrowRight'] || keysPressed.current['KeyD']) {
-        paddleRef.current.x += paddleSpeed;
-        if (paddleRef.current.x + paddleRef.current.width > CANVAS_WIDTH) {
-          paddleRef.current.x = CANVAS_WIDTH - paddleRef.current.width;
+            if (paddleRef.current.x < 0) paddleRef.current.x = 0;
+            if (paddleRef.current.x + paddleRef.current.width > CANVAS_WIDTH) paddleRef.current.x = CANVAS_WIDTH - paddleRef.current.width;
+            
+        } else if (!isHoldingDown || stuckBalls.length === 0) {
+          // Normal Keyboard Mode
+          if (keysPressed.current['ArrowRight'] || keysPressed.current['KeyD']) {
+            paddleRef.current.x += paddleSpeed;
+            if (paddleRef.current.x + paddleRef.current.width > CANVAS_WIDTH) {
+              paddleRef.current.x = CANVAS_WIDTH - paddleRef.current.width;
+            }
+          }
+          if (keysPressed.current['ArrowLeft'] || keysPressed.current['KeyA']) {
+            paddleRef.current.x -= paddleSpeed;
+            if (paddleRef.current.x < 0) {
+              paddleRef.current.x = 0;
+            }
+          }
         }
-      }
-      if (keysPressed.current['ArrowLeft'] || keysPressed.current['KeyA']) {
-        paddleRef.current.x -= paddleSpeed;
-        if (paddleRef.current.x < 0) {
-          paddleRef.current.x = 0;
-        }
-      }
     }
     
     // Calculate paddle velocity for physics
     const paddleVelocity = paddleRef.current.x - prevPaddleX;
+
+    // --- ENEMY LASER LOGIC ---
+    enemyLasersRef.current.forEach(laser => {
+        laser.y += laser.dy;
+        
+        // Paddle Collision
+        if (laser.y + laser.height > paddleRef.current.y &&
+            laser.y < paddleRef.current.y + paddleRef.current.height &&
+            laser.x + laser.width > paddleRef.current.x &&
+            laser.x < paddleRef.current.x + paddleRef.current.width) {
+                
+                // Hit Paddle
+                if (paddleRef.current.hasArmor) {
+                    // Armor blocks hit
+                    paddleRef.current.hasArmor = false;
+                    playSound('wall'); // Use wall sound for block
+                    addFloatingText(paddleRef.current.x + paddleRef.current.width/2, paddleRef.current.y - 20, "BLOCKED!", "#00FFFF");
+                    laser.y = CANVAS_HEIGHT + 100; // Remove laser
+                } else if (!paddleRef.current.isStunned) {
+                    paddleRef.current.isStunned = true;
+                    paddleRef.current.stunStartTime = now;
+                    playSound('gameover'); // Use gameover sound for negative effect or add 'stun'
+                    addFloatingText(paddleRef.current.x + paddleRef.current.width/2, paddleRef.current.y - 20, "STUNNED!", "#94a3b8");
+                    
+                    // Stun particles
+                    for(let i=0; i<10; i++) {
+                        particlesRef.current.push({
+                            x: paddleRef.current.x + Math.random() * paddleRef.current.width,
+                            y: paddleRef.current.y + Math.random() * paddleRef.current.height,
+                            dx: (Math.random() - 0.5) * 4,
+                            dy: (Math.random() - 0.5) * 4,
+                            life: 1.0,
+                            color: '#fbbf24',
+                            size: 3
+                        });
+                    }
+                    laser.y = CANVAS_HEIGHT + 100; // Remove laser
+                } else {
+                    laser.y = CANVAS_HEIGHT + 100; // Remove laser even if already stunned
+                }
+        }
+    });
+    enemyLasersRef.current = enemyLasersRef.current.filter(l => l.y < CANVAS_HEIGHT);
 
     // --- MERCY PRIORITY WAIT LOGIC ---
     if (isWaitingForFinalHeartRef.current) {
@@ -971,6 +1324,76 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     // --- BALL LOGIC ---
     let activeBallsCount = 0;
     
+    // --- MIMIC LOGIC (Proximity Dodge) ---
+    // Check for mimics before collision loop to allow them to dodge
+    bricksRef.current.forEach(b => {
+        if (b.type === BrickType.MIMIC && !b.isMimicRevealed && b.status > 0) {
+            // Check distance to any active ball
+            for (const ball of ballsRef.current) {
+                if (ball.active) {
+                    const dx = ball.x - (b.x + b.width / 2);
+                    const dy = ball.y - (b.y + b.height / 2);
+                    const dist = Math.sqrt(dx * dx + dy * dy);
+                    
+                    if (dist < 60) {
+                        // Trigger Dodge
+                        b.isMimicRevealed = true;
+                        b.color = BRICK_TYPE_COLORS[BrickType.MIMIC]; // Reveal color
+                        playSound('paddle'); // Use a sound effect for the dodge (reusing paddle for now)
+                        
+                        // Attempt to move Right
+                        const moveDist = b.width + BRICK_PADDING;
+                        let newX = b.x + moveDist;
+                        
+                        // Check bounds and collision with other bricks
+                        let blocked = false;
+                        if (newX + b.width > CANVAS_WIDTH) blocked = true;
+                        
+                        if (!blocked) {
+                            // Check overlap with existing bricks
+                            const overlap = bricksRef.current.some(other => 
+                                other !== b && other.status > 0 && 
+                                newX < other.x + other.width && 
+                                newX + b.width > other.x && 
+                                b.y < other.y + other.height && 
+                                b.y + b.height > other.y
+                            );
+                            if (overlap) blocked = true;
+                        }
+                        
+                        if (!blocked) {
+                            b.x = newX;
+                            // Add particles at old position to show movement
+                            particlesRef.current.push(...createParticles(b.x - moveDist + b.width/2, b.y + b.height/2, '#ffffff'));
+                        } else {
+                            // Try Left
+                            newX = b.x - moveDist;
+                            blocked = false;
+                            if (newX < 0) blocked = true;
+                            
+                            if (!blocked) {
+                                const overlap = bricksRef.current.some(other => 
+                                    other !== b && other.status > 0 && 
+                                    newX < other.x + other.width && 
+                                    newX + b.width > other.x && 
+                                    b.y < other.y + other.height && 
+                                    b.y + b.height > other.y
+                                );
+                                if (overlap) blocked = true;
+                            }
+                            
+                            if (!blocked) {
+                                b.x = newX;
+                                particlesRef.current.push(...createParticles(b.x + moveDist + b.width/2, b.y + b.height/2, '#ffffff'));
+                            }
+                        }
+                        break; // Only dodge once per frame/ball check
+                    }
+                }
+            }
+        }
+    });
+
     ballsRef.current.forEach(ball => {
       if (!ball.active) {
         // Stick to paddle
@@ -1031,10 +1454,16 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         
         // Floor / Shield
         else if (ball.y + ball.radius > CANVAS_HEIGHT) {
-           if (shieldActiveRef.current) {
+           if (barrierActiveRef.current) {
              ball.y = CANVAS_HEIGHT - ball.radius;
              ball.dy = -Math.abs(ball.dy);
              playSound('paddle'); 
+           } else if (isInvincible) {
+             // DEV MODE: Infinite Lives
+             ball.active = false;
+             ball.trail = [];
+             ball.y = CANVAS_HEIGHT + 100; // Move off screen
+             // Reset to paddle immediately handled by update loop if no active balls
            } else {
              ball.active = false; 
              ball.trail = [];
@@ -1105,22 +1534,45 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
               let shouldBounce = true;
               let destroyed = false;
               
-              // --- NORMAL LOGIC ---
-              const currentSpeed = Math.sqrt(ball.dx*ball.dx + ball.dy*ball.dy);
-              const isMomentumPierce = currentSpeed > DIFFICULTY_SETTINGS[difficulty].ballSpeed * PIERCE_THRESHOLD_FACTOR;
-              
-              b.status -= 1; // Normal damage
-              if (b.status <= 0) destroyed = true;
-              
-              if (isMomentumPierce) {
+              // --- PORTAL LOGIC ---
+              if (b.type === BrickType.PORTAL) {
+                  b.status = 0; // Destroy portal
+                  destroyed = true;
                   shouldBounce = false;
-                  playSound('pierce');
-                  ball.dx *= PIERCE_DRAG;
-                  ball.dy *= PIERCE_DRAG;
-                  shakeRef.current = 3;
+                  
+                  // Teleport Ball
+                  const safeYMin = CANVAS_HEIGHT * 0.3;
+                  const safeYMax = CANVAS_HEIGHT * 0.6;
+                  const newX = Math.random() * (CANVAS_WIDTH - ball.radius * 2) + ball.radius;
+                  const newY = safeYMin + Math.random() * (safeYMax - safeYMin);
+                  
+                  // Visuals at old position
+                  particlesRef.current.push(...createParticles(ball.x, ball.y, '#3b82f6'));
+                  
+                  ball.x = newX;
+                  ball.y = newY;
+                  
+                  // Visuals at new position
+                  particlesRef.current.push(...createParticles(newX, newY, '#3b82f6'));
+                  playSound('powerup'); // Use powerup sound for teleport
               } else {
-                  shouldBounce = true;
-                  playSound('brick');
+                  // --- NORMAL LOGIC ---
+                  const currentSpeed = Math.sqrt(ball.dx*ball.dx + ball.dy*ball.dy);
+                  const isMomentumPierce = currentSpeed > DIFFICULTY_SETTINGS[difficulty].ballSpeed * PIERCE_THRESHOLD_FACTOR;
+                  
+                  b.status -= 1; // Normal damage
+                  if (b.status <= 0) destroyed = true;
+                  
+                  if (isMomentumPierce) {
+                      shouldBounce = false;
+                      playSound('pierce');
+                      ball.dx *= PIERCE_DRAG;
+                      ball.dy *= PIERCE_DRAG;
+                      shakeRef.current = 3;
+                  } else {
+                      shouldBounce = true;
+                      playSound('brick');
+                  }
               }
 
               // Scoring & Effects
@@ -1430,25 +1882,28 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         ctx.restore();
     };
 
-    const drawShieldIcon = (x: number, y: number, radius: number, color: string) => {
+    const drawBarrierIcon = (x: number, y: number, color: string) => {
         ctx.save();
         ctx.translate(x, y);
-        const r = radius;
         ctx.beginPath();
-        ctx.moveTo(-r*0.8, -r*0.8);
-        ctx.lineTo(r*0.8, -r*0.8);
-        ctx.lineTo(r*0.8, 0);
-        ctx.quadraticCurveTo(r*0.8, r, 0, r*1.3);
-        ctx.quadraticCurveTo(-r*0.8, r, -r*0.8, 0);
-        ctx.closePath();
+        ctx.roundRect(-10, -3, 20, 6, 3);
         ctx.fillStyle = color;
         ctx.shadowBlur = 8;
         ctx.shadowColor = color;
         ctx.fill();
-        ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
-        ctx.shadowBlur = 0;
-        ctx.fillRect(-2, -r*0.5, 4, r*1.2);
-        ctx.fillRect(-r*0.6, -2, r*1.2, 4);
+        ctx.restore();
+    };
+
+    const drawArmorIcon = (x: number, y: number, color: string) => {
+        ctx.save();
+        ctx.translate(x, y);
+        ctx.beginPath();
+        ctx.arc(0, 5, 10, Math.PI, 0);
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = color;
+        ctx.shadowBlur = 8;
+        ctx.shadowColor = color;
+        ctx.stroke();
         ctx.restore();
     };
 
@@ -1545,9 +2000,9 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     ctx.fillStyle = gradient;
     ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
 
-    // Shield
-    if (shieldActiveRef.current) {
-      if (getBlinkState(powerUpStateRef.current.shieldEndTime)) {
+    // Barrier (Old Shield)
+    if (barrierActiveRef.current) {
+      if (getBlinkState(powerUpStateRef.current.barrierEndTime)) {
         ctx.beginPath();
         ctx.moveTo(0, CANVAS_HEIGHT - 2);
         ctx.lineTo(CANVAS_WIDTH, CANVAS_HEIGHT - 2);
@@ -1595,30 +2050,101 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         ctx.restore();
     });
 
+    // Enemy Lasers
+    enemyLasersRef.current.forEach(laser => {
+        ctx.fillStyle = laser.color;
+        ctx.shadowBlur = 10;
+        ctx.shadowColor = laser.color;
+        ctx.fillRect(laser.x, laser.y, laser.width, laser.height);
+        ctx.shadowBlur = 0;
+    });
+
+    // Player Projectiles
+    playerProjectilesRef.current.forEach(p => {
+        ctx.fillStyle = p.color;
+        ctx.shadowBlur = 5;
+        ctx.shadowColor = p.color;
+        ctx.fillRect(p.x, p.y, p.width, p.height);
+        ctx.shadowBlur = 0;
+    });
+
     // Bricks
     bricksRef.current.forEach(b => {
       if (b.status > 0) {
         ctx.beginPath();
         ctx.roundRect(b.x, b.y, b.width, b.height, 4);
-        ctx.fillStyle = b.color;
+        
+        // Turret Visuals based on HP
+        if (b.type === BrickType.TURRET) {
+            if (b.status === 3) ctx.fillStyle = b.color;
+            else if (b.status === 2) ctx.fillStyle = '#b91c1c'; // Darker red
+            else if (b.status === 1) {
+                // Flash red/white
+                ctx.fillStyle = Math.floor(now / 100) % 2 === 0 ? '#ef4444' : '#ffffff';
+            } else {
+                ctx.fillStyle = b.color;
+            }
+        } else {
+            ctx.fillStyle = b.color;
+        }
+
         ctx.fill();
         ctx.closePath();
         
-        // Visual indicator for durable bricks (cracks or border)
-        if (b.maxHealth > 1) {
-            ctx.strokeStyle = 'rgba(0,0,0,0.3)';
-            ctx.lineWidth = 2;
-            ctx.strokeRect(b.x + 2, b.y + 2, b.width - 4, b.height - 4);
-            
-            if (b.status < b.maxHealth) {
-                // Draw crack
-                ctx.beginPath();
-                ctx.moveTo(b.x + b.width * 0.2, b.y + b.height * 0.2);
-                ctx.lineTo(b.x + b.width * 0.5, b.y + b.height * 0.8);
-                ctx.lineTo(b.x + b.width * 0.8, b.y + b.height * 0.3);
-                ctx.strokeStyle = 'rgba(0,0,0,0.5)';
-                ctx.stroke();
+        // Bevel/3D effect (Simulated with simple overlay for standard bricks, or specific details for Turret)
+        if (b.type !== BrickType.TURRET) {
+             // Visual indicator for durable bricks (cracks or border)
+            if (b.maxHealth > 1) {
+                ctx.strokeStyle = 'rgba(0,0,0,0.3)';
+                ctx.lineWidth = 2;
+                ctx.strokeRect(b.x + 2, b.y + 2, b.width - 4, b.height - 4);
+                
+                if (b.status < b.maxHealth) {
+                    // Draw crack
+                    ctx.beginPath();
+                    ctx.moveTo(b.x + b.width * 0.2, b.y + b.height * 0.2);
+                    ctx.lineTo(b.x + b.width * 0.5, b.y + b.height * 0.8);
+                    ctx.lineTo(b.x + b.width * 0.8, b.y + b.height * 0.3);
+                    ctx.strokeStyle = 'rgba(0,0,0,0.5)';
+                    ctx.stroke();
+                }
             }
+        }
+
+        // Turret Details
+        if (b.type === BrickType.TURRET) {
+             // Draw "Eye"
+             ctx.fillStyle = '#000000';
+             ctx.beginPath();
+             ctx.arc(b.x + b.width/2, b.y + b.height/2, 6, 0, Math.PI*2);
+             ctx.fill();
+             ctx.fillStyle = '#ef4444';
+             ctx.beginPath();
+             ctx.arc(b.x + b.width/2, b.y + b.height/2, 3, 0, Math.PI*2);
+             ctx.fill();
+             
+             // Cracks for low HP
+             if (b.status <= 2) {
+                 ctx.strokeStyle = '#000000';
+                 ctx.lineWidth = 1;
+                 ctx.beginPath();
+                 ctx.moveTo(b.x + 5, b.y + 5);
+                 ctx.lineTo(b.x + 15, b.y + 15);
+                 ctx.stroke();
+             }
+             if (b.status === 1) {
+                 ctx.beginPath();
+                 ctx.moveTo(b.x + b.width - 5, b.y + 5);
+                 ctx.lineTo(b.x + b.width - 15, b.y + 15);
+                 ctx.stroke();
+             }
+        }
+
+        // Mimic Reveal Visual
+        if (b.type === BrickType.MIMIC && b.isMimicRevealed) {
+            ctx.strokeStyle = '#ffffff';
+            ctx.lineWidth = 2;
+            ctx.strokeRect(b.x, b.y, b.width, b.height);
         }
       }
     });

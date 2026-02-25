@@ -6,7 +6,8 @@ export enum GameState {
   VICTORY = 'VICTORY',
   SETTINGS = 'SETTINGS',
   RESUMING = 'RESUMING',
-  LEVEL_TRANSITION = 'LEVEL_TRANSITION'
+  LEVEL_TRANSITION = 'LEVEL_TRANSITION',
+  DEV_DASHBOARD = 'DEV_DASHBOARD' // --- TEMP DEV FEATURE ---
 }
 
 export enum Difficulty {
@@ -23,12 +24,15 @@ export enum CampaignMode {
 export enum PowerUpType {
   ENLARGE = 'ENLARGE',
   MULTIBALL = 'MULTIBALL',
-  SHIELD = 'SHIELD',
+  BARRIER = 'BARRIER', // Replaces SHIELD
+  SHIELD = 'SHIELD',   // Kept for backward compatibility if needed
   LASER = 'LASER',
   STICKY = 'STICKY',
   HEART = 'HEART',
   LIGHTNING = 'LIGHTNING',
-  CLUSTER = 'CLUSTER'
+  CLUSTER = 'CLUSTER',
+  ARMOR = 'ARMOR',
+  TURRET = 'TURRET'
 }
 
 export enum BrickType {

@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import GameCanvas from './components/GameCanvas';
+import DevDashboard from './components/DevDashboard'; // --- TEMP DEV FEATURE ---
 import { GameState, Difficulty, CampaignMode } from './types';
-import { Play, RotateCcw, Trophy, Settings, Home, Volume2, VolumeX, ArrowLeft, Heart, Zap, HelpCircle, X, ChevronsRight, Infinity, Layers } from 'lucide-react';
+import { Play, RotateCcw, Trophy, Settings, Home, Volume2, VolumeX, ArrowLeft, Heart, Zap, HelpCircle, X, ChevronsRight, Infinity, Layers, Shield } from 'lucide-react';
 import { playSound, startMusic, stopMusic, setMusicVolume, setSfxVolume, getMusicVolume, getSfxVolume } from './utils/audio';
 import { DIFFICULTY_SETTINGS } from './constants';
 import { ARCADE_LEVELS, ENDLESS_STAGES } from './data/levels';
@@ -27,6 +28,10 @@ const App: React.FC = () => {
   const [campaignMode, setCampaignMode] = useState<CampaignMode>(CampaignMode.ARCADE);
   const [levelIndex, setLevelIndex] = useState(0); // 0-based index for array access
   const [difficultyMultiplier, setDifficultyMultiplier] = useState(1.0); // Increases in Endless
+  
+  // --- TEMP DEV FEATURE ---
+  const [isDevMode, setIsDevMode] = useState(false);
+  const [isInvincible, setIsInvincible] = useState(false);
 
   // Responsive Scale
   const scale = useGameScale(BASE_WIDTH, BASE_HEIGHT);
@@ -359,6 +364,9 @@ const App: React.FC = () => {
                 campaignMode={campaignMode}
                 difficultyMultiplier={difficultyMultiplier}
                 onLevelComplete={handleLevelComplete}
+                // --- TEMP DEV FEATURE ---
+                isDevMode={isDevMode}
+                isInvincible={isInvincible}
             />
 
             {/* Resume Countdown Overlay */}
@@ -549,7 +557,38 @@ const App: React.FC = () => {
                                 </div>
                             </div>
 
-                            <div className="space-y-3 shrink-0">
+                            {/* --- TEMP DEV FEATURE --- */}
+                            <div className="mt-4 pt-4 border-t border-slate-700">
+                                <div className="flex justify-between items-center mb-2">
+                                    <span className="text-xs font-bold text-cyan-400 uppercase tracking-wider flex items-center gap-2">
+                                        <Shield className="w-3 h-3" />
+                                        Developer Mode
+                                    </span>
+                                    <button 
+                                        onClick={() => {
+                                            if (!isDevMode) {
+                                                setIsDevMode(true);
+                                                setGameState(GameState.DEV_DASHBOARD);
+                                            } else {
+                                                setIsDevMode(false);
+                                            }
+                                        }}
+                                        className={`w-10 h-5 rounded-full relative transition-colors ${isDevMode ? 'bg-cyan-500' : 'bg-slate-700'}`}
+                                    >
+                                        <div className={`absolute top-1 w-3 h-3 rounded-full bg-white transition-all ${isDevMode ? 'left-6' : 'left-1'}`} />
+                                    </button>
+                                </div>
+                                {isDevMode && (
+                                    <button 
+                                        onClick={() => setGameState(GameState.DEV_DASHBOARD)}
+                                        className="w-full py-2 bg-slate-800 hover:bg-slate-700 text-cyan-400 text-xs font-bold rounded transition-colors border border-slate-700"
+                                    >
+                                        OPEN DASHBOARD
+                                    </button>
+                                )}
+                            </div>
+
+                            <div className="space-y-3 shrink-0 mt-4">
                                 <button 
                                     onClick={togglePause}
                                     className="w-full py-3 bg-white hover:bg-slate-200 text-slate-900 font-bold rounded-lg transition-colors flex items-center justify-center gap-2"
@@ -638,6 +677,19 @@ const App: React.FC = () => {
                     </button>
                 </div>
             </div>
+            )}
+
+            {/* --- TEMP DEV FEATURE --- */}
+            {gameState === GameState.DEV_DASHBOARD && (
+                <DevDashboard 
+                    setGameState={setGameState}
+                    setIsDevMode={setIsDevMode}
+                    isInvincible={isInvincible}
+                    setIsInvincible={setIsInvincible}
+                    setLevelIndex={setLevelIndex}
+                    initializeGame={initializeGame}
+                    setCampaignMode={setCampaignMode}
+                />
             )}
         </div>
 

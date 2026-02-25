@@ -1,11 +1,12 @@
-import React, { useRef, useEffect, useCallback, useState } from 'react';
+import React, { useRef, useEffect, useCallback } from 'react';
 import { 
   CANVAS_WIDTH, CANVAS_HEIGHT, PADDLE_WIDTH, PADDLE_WIDTH_ENLARGED, PADDLE_HEIGHT, PADDLE_OFFSET_BOTTOM, 
   BALL_RADIUS, COLORS, BRICK_PADDING, BRICK_OFFSET_TOP, BRICK_OFFSET_LEFT,
   DIFFICULTY_SETTINGS, POWERUP_CHANCE, POWERUP_COLORS, POWERUP_SPEED,
   ENLARGE_DURATION, SHIELD_DURATION, LASER_DELAY, POWERUP_WARNING_MS, STICKY_DURATION,
   DASH_COOLDOWN_MS, DASH_DISTANCE, LIGHTNING_DURATION, CLUSTER_DURATION,
-  PIERCE_THRESHOLD_FACTOR, PIERCE_DRAG, BRICK_TYPE_COLORS, BRICK_HEIGHT, MAX_BALLS
+  PIERCE_THRESHOLD_FACTOR, PIERCE_DRAG, BRICK_TYPE_COLORS, BRICK_HEIGHT, MAX_BALLS,
+  BARRIER_DURATION, TURRET_DURATION
 } from '../constants';
 import { GameState, Difficulty, Ball, Paddle, Brick, Particle, PowerUp, PowerUpType, LightningArc, Shrapnel, PaddleGhost, CampaignMode, BrickType } from '../types';
 import { detectCircleRectCollision, createParticles, updateParticles } from '../utils/physics';
@@ -22,6 +23,13 @@ interface FloatingText {
   dy: number;
 }
 
+interface PortalExit {
+  id: number;
+  x: number;
+  y: number;
+  life: number; // 1.0 to 0.0
+}
+
 interface GameCanvasProps {
   gameState: GameState;
   setGameState: (state: GameState) => void;
@@ -35,10 +43,14 @@ interface GameCanvasProps {
   campaignMode: CampaignMode;
   difficultyMultiplier: number;
   onLevelComplete: () => void;
+  // --- TEMP DEV FEATURE ---
+  isDevMode?: boolean;
+  isInvincible?: boolean;
 }
 
 const GameCanvas: React.FC<GameCanvasProps> = ({ 
-  gameState, setGameState, score, setScore, lives, setLives, difficulty, setMultiplier, levelIndex, campaignMode, difficultyMultiplier, onLevelComplete
+  gameState, setGameState, score, setScore, lives, setLives, difficulty, setMultiplier, levelIndex, campaignMode, difficultyMultiplier, onLevelComplete,
+  isDevMode = false, isInvincible = false
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const requestRef = useRef<number>(0);
@@ -57,6 +69,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
   const paddleGhostsRef = useRef<PaddleGhost[]>([]);
   const enemyLasersRef = useRef<EnemyLaser[]>([]);
   const playerProjectilesRef = useRef<PlayerProjectile[]>([]);
+  const portalExitsRef = useRef<PortalExit[]>([]);
   const shakeRef = useRef<number>(0); // Screen shake magnitude
   
   // Track initialized level to prevent resetting on Resume
@@ -100,20 +113,6 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
   // Mercy Priority: Wait for final heart logic
   const isWaitingForFinalHeartRef = useRef<boolean>(false);
   const finalHeartIdRef = useRef<number | null>(null);
-
-  // --- DEV MODE STATE ---
-  const [isDevMode, setIsDevMode] = useState(false);
-  const [isInvincible, setIsInvincible] = useState(false);
-
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-        if (e.code === 'Backquote') {
-            setIsDevMode(prev => !prev);
-        }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, []);
 
   // Power-up State (Timestamp based for better control)
   const powerUpStateRef = useRef<{
@@ -162,10 +161,22 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
   const initBricks = useCallback(() => {
     // Determine which config to load
     let config;
+    
+    // Defensive check for levels data
+    if (!ARCADE_LEVELS || ARCADE_LEVELS.length === 0) {
+        console.error("Levels data missing!");
+        return;
+    }
+
     if (campaignMode === CampaignMode.ARCADE) {
         config = ARCADE_LEVELS[levelIndex] || ARCADE_LEVELS[0];
     } else {
         config = ENDLESS_STAGES[levelIndex] || ENDLESS_STAGES[0];
+    }
+
+    if (!config || !config.layout) {
+        console.error("Invalid level config:", config);
+        return;
     }
 
     // Dynamic Size Calculation
@@ -173,9 +184,18 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     const totalAvailableWidth = CANVAS_WIDTH - (BRICK_OFFSET_LEFT * 2);
     const brickWidth = (totalAvailableWidth - (BRICK_PADDING * (config.cols - 1))) / config.cols;
 
+    // Safety check for brickWidth
+    if (!isFinite(brickWidth) || brickWidth <= 0) {
+        console.error("Invalid brick width calculated:", brickWidth);
+        return;
+    }
+
     const newBricks: Brick[] = [];
     
-    for (let i = 0; i < config.layout.length; i++) {
+    // Limit iteration to avoid potential infinite loops or massive arrays
+    const maxBricks = Math.min(config.layout.length, config.rows * config.cols);
+
+    for (let i = 0; i < maxBricks; i++) {
         const typeCode = config.layout[i];
         if (typeCode === 0) continue; // Empty space
 
@@ -458,6 +478,10 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     const canvas = canvasRef.current;
     if (!canvas) return { x: 0, y: 0 };
     const rect = canvas.getBoundingClientRect();
+    
+    // Defensive check for touches
+    if (!e.touches || e.touches.length === 0) return { x: 0, y: 0 };
+    
     const touch = e.touches[0];
     const scaleX = canvas.width / rect.width;
     const scaleY = canvas.height / rect.height;
@@ -596,6 +620,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         break;
 
       case PowerUpType.BARRIER:
+      case PowerUpType.SHIELD:
         powerUpStateRef.current.barrierEndTime = now + BARRIER_DURATION;
         barrierActiveRef.current = true;
         addFloatingText(x, y - 20, 'BARRIER', '#38bdf8');
@@ -862,14 +887,52 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
       keysPressed.current[e.code] = false;
     };
 
+    // --- TEMP DEV FEATURE: HOTKEYS ---
+    const handleDevKeys = (e: KeyboardEvent) => {
+        if (!isDevMode) return;
+        // Strict Modifier Check: Shift MUST be held, others must NOT
+        if (!e.shiftKey || e.ctrlKey || e.altKey || e.metaKey) return;
+        
+        e.preventDefault(); // Stop browser shortcuts
+
+        const spawnPowerUp = (type: PowerUpType) => {
+            powerUpsRef.current.push({
+                id: Math.random(),
+                x: paddleRef.current.x + paddleRef.current.width / 2,
+                y: 100, // Spawn from top
+                width: 20,
+                height: 20,
+                dy: POWERUP_SPEED,
+                type: type,
+                active: true,
+                color: POWERUP_COLORS[type]
+            });
+        };
+
+        switch(e.code) {
+            case 'KeyH': spawnPowerUp(PowerUpType.HEART); break;
+            case 'KeyB': spawnPowerUp(PowerUpType.BARRIER); break;
+            case 'KeyA': spawnPowerUp(PowerUpType.ARMOR); break;
+            case 'KeyE': spawnPowerUp(PowerUpType.ENLARGE); break;
+            case 'KeyM': spawnPowerUp(PowerUpType.MULTIBALL); break;
+            case 'KeyT': spawnPowerUp(PowerUpType.TURRET); break;
+            case 'KeyL': spawnPowerUp(PowerUpType.LASER); break;
+            case 'KeyZ': spawnPowerUp(PowerUpType.LIGHTNING); break;
+            case 'KeyC': spawnPowerUp(PowerUpType.CLUSTER); break;
+            case 'KeyS': spawnPowerUp(PowerUpType.STICKY); break;
+        }
+    };
+
     window.addEventListener('keydown', handleKeyDown);
     window.addEventListener('keyup', handleKeyUp);
+    if (isDevMode) window.addEventListener('keydown', handleDevKeys);
 
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keyup', handleKeyUp);
+      if (isDevMode) window.removeEventListener('keydown', handleDevKeys);
     };
-  }, [gameState, launchBalls, performDash]);
+  }, [gameState, launchBalls, performDash, isDevMode]);
 
   // Level Update Listener
   useEffect(() => {
@@ -938,6 +1001,11 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     // Actually, we want to process only the bricks that existed at start of frame.
     const initialBricks = [...bricks];
 
+    // Spore Population Control
+    const sporeCount = initialBricks.filter(b => b.type === BrickType.SPORE).length;
+    const currentSporeDelay = 4000 + (sporeCount * 1000); // 4s base + 1s per spore
+    const MAX_SPORES = 60; // Hard cap
+
     initialBricks.forEach(brick => {
         if (brick.status <= 0) return;
 
@@ -948,12 +1016,15 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                 brick.lastActionTime = now;
                 
                 // Check adjacent positions
-                const neighbors = [
+                const rawNeighbors = [
                     { x: brick.x - (brick.width + BRICK_PADDING), y: brick.y }, // Left
                     { x: brick.x + (brick.width + BRICK_PADDING), y: brick.y }, // Right
                     { x: brick.x, y: brick.y - (BRICK_HEIGHT + BRICK_PADDING) }, // Up
                     { x: brick.x, y: brick.y + (BRICK_HEIGHT + BRICK_PADDING) }  // Down
                 ];
+                
+                // Filter out-of-bounds neighbors to prevent crashes
+                const neighbors = rawNeighbors.filter(pos => isWithinBounds(pos.x, pos.y, brick.width, BRICK_HEIGHT));
 
                 let actionTaken = false;
 
@@ -1005,34 +1076,46 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         // SPORE LOGIC
         if (brick.type === BrickType.SPORE) {
             if (!brick.lastActionTime) brick.lastActionTime = now;
-            if (now - brick.lastActionTime > 4000) {
+            
+            // Dynamic Delay Check
+            if (now - brick.lastActionTime > currentSporeDelay) {
                 brick.lastActionTime = now;
 
-                const neighbors = [
+                // Hard Cap Check
+                if (sporeCount >= MAX_SPORES) return;
+
+                const rawNeighbors = [
                     { x: brick.x - (brick.width + BRICK_PADDING), y: brick.y },
                     { x: brick.x + (brick.width + BRICK_PADDING), y: brick.y },
                     { x: brick.x, y: brick.y - (BRICK_HEIGHT + BRICK_PADDING) },
                     { x: brick.x, y: brick.y + (BRICK_HEIGHT + BRICK_PADDING) }
                 ];
+                
+                // Filter out-of-bounds neighbors
+                const neighbors = rawNeighbors.filter(pos => isWithinBounds(pos.x, pos.y, brick.width, BRICK_HEIGHT));
 
                 const validSpots = neighbors.filter(pos => 
-                    isWithinBounds(pos.x, pos.y, brick.width, BRICK_HEIGHT) && !findBrickAt(pos.x, pos.y)
+                    !findBrickAt(pos.x, pos.y)
                 );
 
                 if (validSpots.length > 0) {
-                    const pos = validSpots[Math.floor(Math.random() * validSpots.length)];
-                    bricksRef.current.push({
-                        x: pos.x,
-                        y: pos.y,
-                        width: brick.width,
-                        height: BRICK_HEIGHT,
-                        status: 1,
-                        maxHealth: 1,
-                        color: BRICK_TYPE_COLORS[BrickType.STANDARD],
-                        type: BrickType.STANDARD,
-                        value: 10
-                    });
-                    particlesRef.current.push(...createParticles(pos.x + brick.width/2, pos.y + BRICK_HEIGHT/2, '#eab308'));
+                    const randomIndex = Math.floor(Math.random() * validSpots.length);
+                    const pos = validSpots[randomIndex];
+                    
+                    if (pos) {
+                        bricksRef.current.push({
+                            x: pos.x,
+                            y: pos.y,
+                            width: brick.width,
+                            height: BRICK_HEIGHT,
+                            status: 1,
+                            maxHealth: 1,
+                            color: BRICK_TYPE_COLORS[BrickType.SPORE], // Use Spore color
+                            type: BrickType.SPORE, // Spawn another Spore!
+                            value: 20 // Spores are worth more
+                        });
+                        particlesRef.current.push(...createParticles(pos.x + brick.width/2, pos.y + BRICK_HEIGHT/2, '#eab308'));
+                    }
                 }
             }
         }
@@ -1064,7 +1147,11 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     const now = Date.now();
 
     // Update Living Bricks
-    updateLivingBricks();
+    try {
+        updateLivingBricks();
+    } catch (error) {
+        console.error("Brick tick failed:", error);
+    }
 
     // --- TIMED POWERUPS LOGIC ---
     const stickyActive = now < powerUpStateRef.current.stickyEndTime;
@@ -1459,11 +1546,20 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
              ball.dy = -Math.abs(ball.dy);
              playSound('paddle'); 
            } else if (isInvincible) {
-             // DEV MODE: Infinite Lives
+             // --- TEMP DEV FEATURE: INVINCIBILITY ---
              ball.active = false;
              ball.trail = [];
-             ball.y = CANVAS_HEIGHT + 100; // Move off screen
-             // Reset to paddle immediately handled by update loop if no active balls
+             // Reset to paddle without losing life
+             ball.stuckOffset = 0;
+             // Ensure at least one ball is stuck to paddle if all are lost
+             const activeBalls = ballsRef.current.filter(b => b.active);
+             if (activeBalls.length === 0) {
+                 // Reset this ball to be stuck on paddle
+                 ball.y = paddleRef.current.y - ball.radius;
+                 ball.x = paddleRef.current.x + paddleRef.current.width / 2;
+                 ball.dx = 0;
+                 ball.dy = 0;
+             }
            } else {
              ball.active = false; 
              ball.trail = [];
@@ -1540,11 +1636,44 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                   destroyed = true;
                   shouldBounce = false;
                   
-                  // Teleport Ball
-                  const safeYMin = CANVAS_HEIGHT * 0.3;
-                  const safeYMax = CANVAS_HEIGHT * 0.6;
-                  const newX = Math.random() * (CANVAS_WIDTH - ball.radius * 2) + ball.radius;
-                  const newY = safeYMin + Math.random() * (safeYMax - safeYMin);
+                  // Teleport Ball - Safe Spawn Logic
+                  // Exclude lower third (CANVAS_HEIGHT * 0.66 to CANVAS_HEIGHT)
+                  // Avoid spawning inside active bricks
+                  
+                  const safeYMax = CANVAS_HEIGHT * 0.66;
+                  const safeYMin = BRICK_OFFSET_TOP;
+                  let newX = ball.x;
+                  let newY = ball.y;
+                  let foundSafeSpot = false;
+                  
+                  // Try 50 times to find a safe spot
+                  for (let k = 0; k < 50; k++) {
+                      const rx = Math.random() * (CANVAS_WIDTH - ball.radius * 4) + ball.radius * 2;
+                      const ry = safeYMin + Math.random() * (safeYMax - safeYMin);
+                      
+                      // Check collision with any active brick
+                      // Simple AABB check for point vs rect
+                      const hitBrick = bricksRef.current.some(brick => 
+                          brick.status > 0 &&
+                          rx > brick.x - ball.radius * 2 && 
+                          rx < brick.x + brick.width + ball.radius * 2 &&
+                          ry > brick.y - ball.radius * 2 && 
+                          ry < brick.y + brick.height + ball.radius * 2
+                      );
+                      
+                      if (!hitBrick) {
+                          newX = rx;
+                          newY = ry;
+                          foundSafeSpot = true;
+                          break;
+                      }
+                  }
+                  
+                  // Fallback if crowded: Spawn at very top or sides if possible, or just default to random upper area
+                  if (!foundSafeSpot) {
+                      newX = Math.random() * (CANVAS_WIDTH - 100) + 50;
+                      newY = BRICK_OFFSET_TOP - 20; // Just above bricks
+                  }
                   
                   // Visuals at old position
                   particlesRef.current.push(...createParticles(ball.x, ball.y, '#3b82f6'));
@@ -1552,7 +1681,14 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                   ball.x = newX;
                   ball.y = newY;
                   
-                  // Visuals at new position
+                  // Visuals at new position (Exit Vortex)
+                  portalExitsRef.current.push({
+                      id: Math.random(),
+                      x: newX,
+                      y: newY,
+                      life: 1.0
+                  });
+                  
                   particlesRef.current.push(...createParticles(newX, newY, '#3b82f6'));
                   playSound('powerup'); // Use powerup sound for teleport
               } else {
@@ -1737,6 +1873,12 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     });
     floatingTextsRef.current = floatingTextsRef.current.filter(t => t.life > 0);
 
+    // Portal Exits
+    portalExitsRef.current.forEach(p => {
+        p.life -= 0.02;
+    });
+    portalExitsRef.current = portalExitsRef.current.filter(p => p.life > 0);
+
   }, [gameState, difficulty, resetLevel, setGameState, setLives, setScore, lives, setMultiplier, triggerLightning, spawnShrapnel, getLaunchVector, onLevelComplete, campaignMode, difficultyMultiplier]);
 
   const draw = useCallback(() => {
@@ -1886,7 +2028,8 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         ctx.save();
         ctx.translate(x, y);
         ctx.beginPath();
-        ctx.roundRect(-10, -3, 20, 6, 3);
+        // Use simple rect instead of roundRect to prevent compatibility issues/freezes
+        ctx.rect(-10, -3, 20, 6);
         ctx.fillStyle = color;
         ctx.shadowBlur = 8;
         ctx.shadowColor = color;
@@ -1898,12 +2041,33 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         ctx.save();
         ctx.translate(x, y);
         ctx.beginPath();
-        ctx.arc(0, 5, 10, Math.PI, 0);
-        ctx.lineWidth = 3;
+        // Draw Shield Shape
+        // Top flat/curved
+        ctx.moveTo(-7, -8);
+        ctx.quadraticCurveTo(0, -5, 7, -8);
+        // Sides
+        ctx.lineTo(7, -2);
+        // Bottom curve to point
+        ctx.bezierCurveTo(7, 5, 0, 10, 0, 10);
+        ctx.bezierCurveTo(0, 10, -7, 5, -7, -2);
+        ctx.lineTo(-7, -8);
+        
+        ctx.lineWidth = 2;
         ctx.strokeStyle = color;
+        ctx.fillStyle = 'rgba(0, 255, 255, 0.2)'; // Faint fill
         ctx.shadowBlur = 8;
         ctx.shadowColor = color;
+        ctx.fill();
         ctx.stroke();
+        
+        // Inner detail (cross or line)
+        ctx.beginPath();
+        ctx.moveTo(0, -5);
+        ctx.lineTo(0, 8);
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1;
+        ctx.stroke();
+        
         ctx.restore();
     };
 
@@ -2140,6 +2304,101 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
              }
         }
 
+        // Healer Details
+        if (b.type === BrickType.HEALER) {
+            ctx.save();
+            ctx.strokeStyle = 'white';
+            ctx.lineWidth = 4;
+            const cx = b.x + b.width / 2;
+            const cy = b.y + b.height / 2;
+            const size = 6;
+            
+            ctx.beginPath();
+            ctx.moveTo(cx, cy - size);
+            ctx.lineTo(cx, cy + size);
+            ctx.stroke();
+            
+            ctx.beginPath();
+            ctx.moveTo(cx - size, cy);
+            ctx.lineTo(cx + size, cy);
+            ctx.stroke();
+            ctx.restore();
+        }
+
+        // Spore Details
+        if (b.type === BrickType.SPORE) {
+            ctx.save();
+            ctx.fillStyle = 'white';
+            const cx = b.x + b.width / 2;
+            const cy = b.y + b.height / 2;
+            
+            // 3 dots
+            ctx.beginPath(); ctx.arc(cx, cy - 5, 2, 0, Math.PI * 2); ctx.fill();
+            ctx.beginPath(); ctx.arc(cx - 5, cy + 4, 2, 0, Math.PI * 2); ctx.fill();
+            ctx.beginPath(); ctx.arc(cx + 5, cy + 4, 2, 0, Math.PI * 2); ctx.fill();
+            ctx.restore();
+        }
+
+        // Portal Details (Refined Galaxy/Vortex)
+        if (b.type === BrickType.PORTAL) {
+            ctx.save();
+            const cx = b.x + b.width / 2;
+            const cy = b.y + b.height / 2;
+            const r = Math.min(b.width, b.height) / 2 - 2;
+            
+            ctx.translate(cx, cy);
+            
+            // 1. Void Background
+            ctx.beginPath();
+            ctx.arc(0, 0, r, 0, Math.PI * 2);
+            ctx.fillStyle = '#020617'; // Deep dark blue/black
+            ctx.fill();
+            
+            // 2. Swirling Arms
+            const arms = 6;
+            const spin = now / 300; // Slower, majestic spin
+            
+            ctx.save();
+            ctx.rotate(spin); // Rotate the entire galaxy
+            
+            for (let i = 0; i < arms; i++) {
+                ctx.save();
+                const angle = (i * Math.PI * 2) / arms; // Static angle relative to the spinning group
+                ctx.rotate(angle);
+                
+                // Draw a "swoosh" (Spiral Arm)
+                ctx.beginPath();
+                // Start near center
+                ctx.moveTo(2, 0);
+                // Curve out to edge using bezier to create spiral shape
+                ctx.bezierCurveTo(r * 0.4, r * 0.1, r * 0.6, r * 0.6, r * 0.9, r * 0.4);
+                
+                // Alternating colors
+                const isCyan = i % 2 === 0;
+                ctx.strokeStyle = isCyan ? 'rgba(34, 211, 238, 0.9)' : 'rgba(217, 70, 239, 0.9)'; // Cyan / Fuchsia
+                ctx.lineWidth = isCyan ? 2.5 : 2; 
+                ctx.lineCap = 'round';
+                
+                // Glow
+                ctx.shadowBlur = 8;
+                ctx.shadowColor = isCyan ? '#22d3ee' : '#d946ef';
+                
+                ctx.stroke();
+                ctx.restore();
+            }
+            ctx.restore();
+            
+            // 3. Center Singularity
+            ctx.beginPath();
+            ctx.arc(0, 0, 3, 0, Math.PI * 2);
+            ctx.fillStyle = '#ffffff';
+            ctx.shadowBlur = 12;
+            ctx.shadowColor = '#ffffff';
+            ctx.fill();
+            
+            ctx.restore();
+        }
+
         // Mimic Reveal Visual
         if (b.type === BrickType.MIMIC && b.isMimicRevealed) {
             ctx.strokeStyle = '#ffffff';
@@ -2189,8 +2448,8 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
          drawLaserIcon(p.x, p.y, p.color);
        } else if (p.type === PowerUpType.HEART) {
          drawHeart(p.x, p.y, r, p.color);
-       } else if (p.type === PowerUpType.SHIELD) {
-         drawShieldIcon(p.x, p.y, r, p.color);
+       } else if (p.type === PowerUpType.SHIELD || p.type === PowerUpType.BARRIER) {
+         drawBarrierIcon(p.x, p.y, p.color);
        } else if (p.type === PowerUpType.MULTIBALL) {
          drawMultiBallIcon(p.x, p.y, r, p.color);
        } else if (p.type === PowerUpType.ENLARGE) {
@@ -2199,6 +2458,22 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
          drawLightningIcon(p.x, p.y, r, p.color);
        } else if (p.type === PowerUpType.CLUSTER) {
          drawClusterIcon(p.x, p.y, r, p.color);
+       } else if (p.type === PowerUpType.ARMOR) {
+         drawArmorIcon(p.x, p.y, p.color);
+       } else if (p.type === PowerUpType.TURRET) {
+         // Draw Turret Icon (Bullet shape)
+         ctx.save();
+         ctx.translate(p.x, p.y);
+         ctx.fillStyle = p.color;
+         ctx.beginPath();
+         ctx.moveTo(-4, -8);
+         ctx.lineTo(4, -8);
+         ctx.lineTo(4, 4);
+         ctx.lineTo(0, 8);
+         ctx.lineTo(-4, 4);
+         ctx.closePath();
+         ctx.fill();
+         ctx.restore();
        } else {
          // Fallback
          ctx.beginPath();
@@ -2211,7 +2486,8 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
          ctx.font = '10px Arial';
          ctx.textAlign = 'center';
          ctx.textBaseline = 'middle';
-         ctx.fillText(p.type[0], p.x, p.y);
+         // Safer fallback
+         ctx.fillText(p.type && p.type.length > 0 ? p.type[0] : '?', p.x, p.y);
          ctx.closePath();
        }
     });
@@ -2268,6 +2544,43 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     ctx.fillStyle = paddleColor;
     ctx.fill();
     ctx.shadowBlur = 0;
+
+    // Armor Shield (Contact Lens Style)
+    if (paddleRef.current.hasArmor) {
+        ctx.save();
+        const cx = paddleRef.current.x + paddleRef.current.width / 2;
+        const cy = paddleRef.current.y;
+        const rx = paddleRef.current.width / 2 + 4;
+        const ry = 18; // Slightly taller for lens curve
+
+        // 1. Lens Body (Glassy Gradient)
+        ctx.beginPath();
+        ctx.ellipse(cx, cy + 2, rx, ry, 0, Math.PI, 0, false); // Top arc
+        
+        const grad = ctx.createLinearGradient(cx, cy - ry, cx, cy);
+        grad.addColorStop(0, 'rgba(160, 230, 255, 0.4)'); // Top bright
+        grad.addColorStop(0.5, 'rgba(100, 200, 255, 0.2)'); // Middle
+        grad.addColorStop(1, 'rgba(100, 200, 255, 0.05)'); // Bottom transparent
+        
+        ctx.fillStyle = grad;
+        ctx.fill();
+
+        // 2. Subtle Rim
+        ctx.lineWidth = 1.5;
+        ctx.strokeStyle = 'rgba(130, 210, 255, 0.5)';
+        ctx.stroke();
+
+        // 3. Glint / Shimmer (Reflection)
+        ctx.beginPath();
+        // Elliptical highlight on top-left
+        ctx.ellipse(cx - rx * 0.4, cy - ry * 0.5, rx * 0.2, ry * 0.25, -Math.PI / 6, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.6)';
+        ctx.shadowBlur = 4;
+        ctx.shadowColor = 'white';
+        ctx.fill();
+
+        ctx.restore();
+    }
     
     // Dash Ready Indicator (Green Bar) - Offset Left
     if (now >= paddleRef.current.dashCooldown) {
@@ -2356,6 +2669,29 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
       }
     });
     
+    // Portal Exits (Spinning Vortex Animation)
+    portalExitsRef.current.forEach(p => {
+        ctx.save();
+        ctx.translate(p.x, p.y);
+        ctx.globalAlpha = p.life;
+        
+        const spinSpeed = -now / 100; // Spin opposite to entry
+        const radius = 20 * p.life; // Shrink as it fades
+        
+        for (let i = 0; i < 4; i++) {
+            ctx.save();
+            ctx.rotate(spinSpeed + (i * (Math.PI / 2)));
+            ctx.beginPath();
+            ctx.arc(0, 0, radius, 0, Math.PI);
+            ctx.strokeStyle = i % 2 === 0 ? '#22d3ee' : '#a855f7';
+            ctx.lineWidth = 3;
+            ctx.stroke();
+            ctx.restore();
+        }
+        
+        ctx.restore();
+    });
+
     // Particles
     particlesRef.current.forEach(p => {
       ctx.beginPath();

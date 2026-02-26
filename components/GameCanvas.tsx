@@ -763,7 +763,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
        const allowed = getAllowedPowerUps(levelIndex);
        const common = [PowerUpType.LASER, PowerUpType.STICKY, PowerUpType.ENLARGE].filter(t => allowed.includes(t));
        const uncommon = [PowerUpType.MULTIBALL, PowerUpType.BARRIER].filter(t => allowed.includes(t));
-       const rare = [PowerUpType.CLUSTER, PowerUpType.LIGHTNING].filter(t => allowed.includes(t));
+       const rare = [PowerUpType.CLUSTER, PowerUpType.LIGHTNING, PowerUpType.TURRET].filter(t => allowed.includes(t));
        
        // Smart Spawn for ARMOR
        const isTurretActive = bricksRef.current.some(b => b.type === BrickType.TURRET && b.status > 0);
